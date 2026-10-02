@@ -1,0 +1,16 @@
+{
+  "name": "darwin-finance",
+  "owner": {
+    "name": "Darwin Finance",
+    "url": "https://darwin.finance"
+  },
+  "description": "The official Darwin Finance agent skill marketplace. github.com/DarwinFinance/agent-skills is the only official source.",
+  "plugins": [
+    {
+      "name": "darwin",
+      "source": "./",
+      "description": "Set up a Darwin agent for agentic trading on Darwin Finance (darwin.finance): pair, reconnect or import a key file, then trade within limits your user sets.",
+      "version": "1.0.0"
+    }
+  ]
+}

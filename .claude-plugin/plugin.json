@@ -1,0 +1,13 @@
+{
+  "name": "darwin",
+  "version": "1.0.0",
+  "description": "Official Darwin Finance skill: set up a Darwin agent for agentic trading on darwin.finance. Pairs with your Darwin account in your browser and keeps the API key in the OS secret store.",
+  "author": {
+    "name": "Darwin Finance",
+    "url": "https://darwin.finance"
+  },
+  "homepage": "https://darwin.finance/agents/setup",
+  "repository": "https://github.com/DarwinFinance/agent-skills",
+  "license": "MIT",
+  "keywords": ["darwin", "darwin-finance", "agentic-trading", "trading", "solana", "crypto", "equities"]
+}

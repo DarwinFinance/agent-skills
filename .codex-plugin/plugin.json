@@ -1,0 +1,13 @@
+{
+  "name": "darwin",
+  "version": "1.0.0",
+  "description": "Official Darwin Finance skill: set up a Darwin agent for agentic trading on darwin.finance.",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Darwin Finance",
+    "shortDescription": "Set up a Darwin agent for agentic trading on darwin.finance",
+    "developerName": "Darwin Finance",
+    "category": "Finance",
+    "websiteURL": "https://darwin.finance/agents/setup"
+  }
+}

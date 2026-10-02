@@ -1,0 +1,5 @@
+{
+  "name": "darwin-agentic-trading",
+  "version": "1.0.0",
+  "description": "Official Darwin Finance skill: set up a Darwin agent for agentic trading on darwin.finance. Pairing is approved in your browser; the key stays in the OS secret store."
+}

@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.8", "3.12"]
+        exclude:
+          # GitHub's macOS arm64 runners have no 3.8 build.
+          - os: macos-latest
+            python: "3.8"
+        include:
+          - os: macos-13
+            python: "3.8"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        env:
+          # CI runners have no unlocked login keychain; the real-Keychain probe runs locally.
+          DARWIN_SKIP_KEYCHAIN: "1"
+        run: python -m unittest discover -s tests -v
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: One version everywhere, SKILL.md limits
+        run: python scripts/check-versions.py
+      - name: Zip is deterministic
+        run: |
+          python scripts/build-zip.py --out dist/a.zip
+          python scripts/build-zip.py --out dist/b.zip
+          cmp dist/a.zip dist/b.zip
+          sha256sum dist/a.zip
+      - name: Manifests are valid JSON
+        run: |
+          for f in .claude-plugin/marketplace.json .claude-plugin/plugin.json gemini-extension.json .cursor-plugin/plugin.json .codex-plugin/plugin.json; do
+            python -m json.tool "$f" > /dev/null || exit 1
+          done
+      - name: Helper is stdlib-only
+        run: |
+          python - <<'PY'
+          import ast, sys
+          src = open("skills/darwin-agentic-trading/scripts/darwin.py").read()
+          allowed = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else None
+          bad = []
+          for node in ast.walk(ast.parse(src)):
+              names = [a.name for a in node.names] if isinstance(node, ast.Import) else ([node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+              for n in names:
+                  if allowed is not None and n.split(".")[0] not in allowed:
+                      bad.append(n)
+          if bad:
+              sys.exit("non-stdlib imports: %s" % bad)
+          print("stdlib only")
+          PY
