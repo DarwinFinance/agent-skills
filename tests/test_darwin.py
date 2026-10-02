@@ -899,6 +899,25 @@ class Ancestors(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_parent_inserted_during_creation_is_caught(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            target = os.path.join(tmp, "parent", "state")
+            real_makedirs = os.makedirs
+
+            def racing_makedirs(path, mode=0o777, exist_ok=False):
+                # "Another user" wins the race and creates the parent world-writable.
+                os.mkdir(os.path.join(tmp, "parent"))
+                os.chmod(os.path.join(tmp, "parent"), 0o777)
+                return real_makedirs(path, mode=mode, exist_ok=exist_ok)
+
+            with mock.patch.object(D.os, "makedirs", side_effect=racing_makedirs):
+                with self.assertRaises(D.HelperError) as cm:
+                    D.ensure_private_dir(target)
+            self.assertEqual(cm.exception.code, "state_dir_unsafe")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_foreign_lock_file_refused(self):
         tmp = tempfile.mkdtemp()
         try:

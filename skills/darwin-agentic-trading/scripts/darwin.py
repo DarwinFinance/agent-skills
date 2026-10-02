@@ -394,6 +394,12 @@ def ensure_private_dir(path):
         os.makedirs(path, mode=0o700, exist_ok=True)
     except OSError as e:
         raise HelperError("state_dir_unusable", "Cannot create %s (%s)." % (path, type(e).__name__))
+    # Validate AGAIN now that every component exists: a parent someone else created between
+    # the first check and makedirs is caught here (it is theirs, or writable by others), and a
+    # chain that passes now cannot be changed later by anyone but us or root.
+    uid = _uid()
+    if uid is not None and walk_safely(path, (uid, 0)) != path:
+        raise HelperError("state_dir_unsafe", "%s changed while it was being created; refusing to use it." % path)
     st = os.lstat(path)
     if _is_link(st) or not stat.S_ISDIR(st.st_mode):
         raise HelperError("state_dir_unsafe", "%s is a symlink or not a directory; refusing to use it." % path)
