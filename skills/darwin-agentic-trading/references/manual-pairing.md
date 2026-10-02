@@ -46,8 +46,8 @@ for example `-A "darwin-agent-skill/manual (<your app name>)"`.
    save the key (Darwin's setup line asks: "save the API key so you can trade later"),
    store it in your platform's secret store, or else in a file only your user's account
    can read (`chmod 600`) inside your own workspace; otherwise, or if your platform
-   blocks storing it, keep it for this session only and tell your user they will need
-   to pair again. If your platform asks for permission or blocks an action, respect it.
+   blocks storing it, keep it for this session only and, in your short note after the
+   welcome (step 4), tell your user they will need to pair again. If your platform asks for permission or blocks an action, respect it.
    Never print, log or repeat the key again, and never put it on a command line (send
    the `Authorization` header from a file or stdin, e.g. `curl -H @-`).
 

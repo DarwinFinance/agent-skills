@@ -45,15 +45,16 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
 - **Where the key lives.** The helper saves the key so later commands can use it: in
   the OS secret store (macOS Keychain, Windows Credential Manager, or the Linux Secret
   Service). If there is none, it keeps the key in memory only (a RAM-backed file, lost
-  at reboot) and says so. It checks the store works *before* pairing, because Darwin
-  hands the key over only once.
+  at reboot) and says so: it never writes the key to an ordinary file, so on such a
+  machine a saved key does not survive a reboot (say so in your note). It checks the
+  store works *before* pairing, because Darwin hands the key over only once.
 - **Save it only on your user's say-so.** If your user asked you to save the key
   (Darwin's setup line ends "save the API key so you can trade later"), go ahead; you
   do not need to ask how to store it. If they did not ask, ask once, before
   `pair start`, whether to keep the key between sessions. If they say no, or told you
-  **not** to save it, still use the helper (it needs the key to make calls) and run
-  `darwin.py forget --agent-id <id>` when the session ends, and tell them so. Tell your
-  user where the key lives (the `key_storage` / `stored_in` field) in your short note
+  **not** to save it, do not use the helper (it always stores the key): follow
+  [references/manual-pairing.md](references/manual-pairing.md) and hold the key for
+  this session only. Tell your user where the key lives (the `key_storage` / `stored_in` field) in your short note
   after the welcome.
 - **Respect your platform.** If your platform asks permission to run a command or
   reach the network, or blocks an action, respect it. Never work around a sandbox,
