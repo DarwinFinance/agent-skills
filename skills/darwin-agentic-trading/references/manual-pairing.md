@@ -14,8 +14,8 @@ API key pass through this conversation's tool output (step 1's and step 3's resp
 and any command you run that contains them is visible to your tool runner. Anything
 that records the transcript records them. Prefer the helper, or a key file imported
 with the helper, whenever you can and your user is happy for the key to be saved. This
-fallback exists only for agents that cannot run python3 and for users who do not want
-the key saved.
+fallback exists only for agents that cannot run python3, for users who do not want
+the key saved, and for users who want it saved where the helper has no OS secret store.
 
 Every request needs a real `User-Agent` (Darwin's edge refuses some library defaults),
 for example `-A "darwin-agent-skill/manual (<your app name>)"`.
