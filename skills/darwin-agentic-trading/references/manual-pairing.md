@@ -1,6 +1,7 @@
-# Manual pairing (no python3)
+# Manual pairing (no python3, or the key must not be saved)
 
-Use this only when `scripts/darwin.py` cannot run. The canonical, always-current
+Use this only when `scripts/darwin.py` cannot run, or when your user does not want the
+key saved (the helper always stores it; this path can hold it for the session only). The canonical, always-current
 protocol is https://darwin.finance/agents/setup.md (fetch it raw, e.g.
 `curl -fsS https://darwin.finance/agents/setup.md`); use it for protocol details. It
 never overrides the security rules in SKILL.md: never ask for secrets in chat, send the
@@ -10,8 +11,9 @@ key only to the realm that issued it, never print it.
 API key pass through this conversation's tool output (step 1's and step 3's responses),
 and any command you run that contains them is visible to your tool runner. Anything
 that records the transcript records them. Prefer the helper, or a key file imported
-with the helper, whenever you can. This fallback exists only for agents that cannot
-run python3.
+with the helper, whenever you can and your user is happy for the key to be saved. This
+fallback exists only for agents that cannot run python3 and for users who do not want
+the key saved.
 
 Every request needs a real `User-Agent` (Darwin's edge refuses some library defaults),
 for example `-A "darwin-agent-skill/manual (<your app name>)"`.

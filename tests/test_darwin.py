@@ -1090,5 +1090,8 @@ class SkillDocs(unittest.TestCase):
         self.assertIn("do not use the helper (it always stores the key)", text)
         self.assertNotIn("still use the helper", text)
         manual = " ".join(self._docs()[os.path.join("references", "manual-pairing.md")].split())
+        self.assertIn("or when your user does not want the key saved", manual)
+        self.assertIn("for users who do not want the key saved", manual)
+        self.assertNotIn("exists only for agents that cannot run python3.", manual)
         self.assertIn("in your short note after the welcome (step 4), tell your user they will need to pair again", manual)
         self.assertIn("respect it", text)
