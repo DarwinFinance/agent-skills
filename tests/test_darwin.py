@@ -878,6 +878,27 @@ class Ancestors(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_dotdot_after_symlink_is_resolved_first(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            safe = os.path.join(tmp, "safe")
+            shared = os.path.join(tmp, "shared")
+            os.mkdir(safe, 0o700)
+            os.mkdir(shared)
+            os.chmod(shared, 0o777)
+            os.mkdir(os.path.join(shared, "inner"))
+            os.symlink(os.path.join(shared, "inner"), os.path.join(safe, "link"))
+            with self.assertRaises(D.HelperError):
+                D.ensure_private_dir(os.path.join(safe, "link", "..", "state"))
+            self.assertFalse(os.path.exists(os.path.join(shared, "state")))
+            with self.assertRaises(D.HelperError):
+                D.ensure_private_dir(os.path.join(safe, "missing", "..", "link", "state"))
+            os.mkdir(os.path.join(safe, "x"), 0o700)
+            good = D.ensure_private_dir(os.path.join(safe, "x", "..", "state"))
+            self.assertEqual(os.path.realpath(good), os.path.realpath(os.path.join(safe, "state")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_foreign_lock_file_refused(self):
         tmp = tempfile.mkdtemp()
         try:

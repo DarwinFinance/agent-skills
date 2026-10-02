@@ -336,7 +336,9 @@ def walk_safely(path, owners, allow_sticky=True, max_hops=40):
     be owned by one of `owners` and not writable by others (sticky dirs like /tmp allowed
     when `allow_sticky`). Missing components end the walk: what does not exist yet will be
     created by us, inside an already-judged directory. Returns the resolved path."""
-    pending = [c for c in os.path.abspath(path).split(os.sep) if c]
+    # NOT abspath(): it would collapse `..` lexically, before symlinks are resolved.
+    raw = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    pending = [c for c in raw.split(os.sep) if c]
     cur = os.sep
     _judge(cur, os.lstat(cur), owners, allow_sticky)
     hops = 0
@@ -351,6 +353,8 @@ def walk_safely(path, owners, allow_sticky=True, max_hops=40):
         try:
             st = os.lstat(nxt)
         except FileNotFoundError:
+            if any(c in (".", "..") for c in pending):
+                raise HelperError("state_dir_unsafe", "%s: `..` after a missing directory; give a plain path." % path)
             return os.path.join(nxt, *pending) if pending else nxt
         except OSError:
             raise HelperError("state_dir_unsafe", "Cannot inspect %s; refusing to use it." % nxt)
@@ -369,16 +373,23 @@ def walk_safely(path, owners, allow_sticky=True, max_hops=40):
 
 
 def check_ancestors(path):
-    """POSIX: every directory and symlink hop leading to `path`'s parent is ours or root's."""
+    """POSIX: every directory and symlink hop leading to `path`'s parent is ours or root's.
+    Returns `path` re-rooted on its validated, fully resolved parent (use THAT path)."""
+    name = os.path.basename(path.rstrip(os.sep))
+    if name in ("", ".", ".."):
+        raise HelperError("state_dir_unsafe", "%s is not a usable directory name." % path)
     uid = _uid()
     if uid is None:
-        return
-    walk_safely(os.path.dirname(os.path.abspath(path)), (uid, 0))
+        return os.path.abspath(path)
+    raw = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    parent = walk_safely(os.path.dirname(raw.rstrip(os.sep)), (uid, 0))
+    return os.path.join(parent, name)
 
 
 def ensure_private_dir(path):
-    """Create (0700) or verify a directory: not a symlink/junction, ours, private, safe ancestors."""
-    check_ancestors(path)
+    """Create (0700) or verify a directory: not a symlink/junction, ours, private, safe ancestors.
+    Returns the validated, resolved path; callers use it for every later operation."""
+    path = check_ancestors(path)
     try:
         os.makedirs(path, mode=0o700, exist_ok=True)
     except OSError as e:
