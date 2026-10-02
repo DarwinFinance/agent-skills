@@ -1101,8 +1101,14 @@ def cmd_pair_start(args):
 
 
 def _lost_hint(p):
+    if p.get("mode") == "reconnect":
+        # A reconnect key's name carries the pairing's code (server: reconnectKeyLabel).
+        return ("If your user had already approved, a new key may have been issued but its delivery was lost. Ask them to revoke "
+                "the key whose name starts with \"Reconnect %s\" on the agent's Manage tab (the \"Agent reconnected\" email "
+                "names it exactly), then reconnect again. Their other keys are unaffected." % p.get("user_code", ""))
     return ("If your user had already approved, the key may have been issued but its delivery was lost. Ask them to revoke the key "
-            "named \"Paired: %s\" on the agent's Manage tab, then pair again." % p.get("client_name", "agent"))
+            "whose name starts with \"Paired: %s\" on the agent's Manage tab (the \"New agent connected\" email names the agent), "
+            "then pair again." % p.get("client_name", "agent"))
 
 
 def cmd_pair_wait(args):

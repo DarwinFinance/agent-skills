@@ -963,3 +963,15 @@ class KeyFileFieldTypes(unittest.TestCase):
             with self.assertRaises(D.HelperError) as cm:
                 self._parse(dict(good, realm=bad))
             self.assertEqual(cm.exception.code, "key_file_invalid")
+
+
+class LostHint(unittest.TestCase):
+    """Codex (server review r2) P2: a lost reconnect delivery names the RECONNECT key, by its code."""
+
+    def test_reconnect_names_the_reconnect_key(self):
+        h = D._lost_hint({"mode": "reconnect", "user_code": "BCDF-GHJK", "client_name": "Claude Code"})
+        self.assertIn('"Reconnect BCDF-GHJK', h)
+        self.assertNotIn("Paired:", h)
+
+    def test_new_names_the_paired_key(self):
+        self.assertIn('"Paired: Claude Code', D._lost_hint({"mode": "new", "client_name": "Claude Code"}))
