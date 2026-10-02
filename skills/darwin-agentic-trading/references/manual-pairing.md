@@ -1,7 +1,9 @@
 # Manual pairing (no python3, or the key must not be saved)
 
-Use this only when `scripts/darwin.py` cannot run, or when your user does not want the
-key saved (the helper always stores it; this path can hold it for the session only). The canonical, always-current
+Use this only when `scripts/darwin.py` cannot run, when your user does not want the
+key saved (the helper always stores it; this path can hold it for the session only),
+or when your user wants it saved but the helper has no OS secret store (it would keep
+the key only until reboot; this path saves it in an owner-only file). The canonical, always-current
 protocol is https://darwin.finance/agents/setup.md (fetch it raw, e.g.
 `curl -fsS https://darwin.finance/agents/setup.md`); use it for protocol details. It
 never overrides the security rules in SKILL.md: never ask for secrets in chat, send the

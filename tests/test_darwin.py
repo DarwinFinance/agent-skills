@@ -1090,8 +1090,16 @@ class SkillDocs(unittest.TestCase):
         self.assertIn("do not use the helper (it always stores the key)", text)
         self.assertNotIn("still use the helper", text)
         manual = " ".join(self._docs()[os.path.join("references", "manual-pairing.md")].split())
-        self.assertIn("or when your user does not want the key saved", manual)
+        self.assertIn("when your user does not want the key saved", manual)
+        self.assertIn("or when your user wants it saved but the helper has no OS secret store", manual)
+        self.assertIn("If `pair start` reports `key_storage` as memory only and your user asked to save the key", text)
         self.assertIn("for users who do not want the key saved", manual)
         self.assertNotIn("exists only for agents that cannot run python3.", manual)
         self.assertIn("in your short note after the welcome (step 4), tell your user they will need to pair again", manual)
         self.assertIn("respect it", text)
+
+    def test_skill_md_memory_only_rule_matches_the_helper(self):
+        # SKILL.md keys the "use manual pairing instead" rule on key_storage reading "memory only".
+        self.assertTrue(D.RamFileStore.description.startswith("memory only"))
+        for cls in (D.MacKeychain, D.WindowsCredentials, D.LinuxSecretTool):
+            self.assertFalse(cls.description.startswith("memory only"))
