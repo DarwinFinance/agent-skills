@@ -1085,5 +1085,7 @@ class SkillDocs(unittest.TestCase):
     def test_saving_rests_on_the_users_request(self):
         text = " ".join(self._docs()["SKILL.md"].split())
         self.assertIn("save the API key so you can trade later", text)
-        self.assertIn("If your user told you **not** to save the key", text)
+        self.assertIn("Save it only on your user's say-so.", text)
+        self.assertIn("If they did not ask, ask once, before `pair start`, whether to keep the key between sessions.", text)
+        self.assertIn("run `darwin.py forget --agent-id <id>` when the session ends", text)
         self.assertIn("respect it", text)
