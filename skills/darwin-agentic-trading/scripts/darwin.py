@@ -1031,9 +1031,22 @@ SHOW_ADDRESS_BLOCK = ("There is no `welcome` to show, so show your user `address
                       "inside its code block (never inline) so their chat app shows a copy button next to it.")
 
 
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _b58_len(value):
+    """Decoded byte length of a base58 string (alphabet already checked)."""
+    n = 0
+    for ch in value:
+        n = n * 58 + _B58.index(ch)
+    body = (n.bit_length() + 7) // 8
+    return (len(value) - len(value.lstrip("1"))) + body
+
+
 def safe_solana_address(value):
-    """A server-supplied wallet address that may be shown: a Solana public key and nothing else."""
-    if not isinstance(value, str) or not _SOLANA_ADDRESS_RE.match(value):
+    """A server-supplied wallet address that may be shown: a Solana public key (base58 decoding to
+    exactly 32 bytes) and nothing else."""
+    if not isinstance(value, str) or not _SOLANA_ADDRESS_RE.fullmatch(value) or _b58_len(value) != 32:
         return None
     if any(sec in value or value in sec for sec in _KNOWN_SECRETS):
         return None

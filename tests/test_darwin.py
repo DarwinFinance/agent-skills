@@ -338,6 +338,12 @@ class PairWait(Base):
         self.assertNotIn("address_block", out)
         self.assertNotIn(KEY, json.dumps(out))
 
+    def test_address_must_decode_to_32_bytes(self):
+        self.assertEqual(D.safe_solana_address(ADDR), ADDR)
+        self.assertEqual(D.safe_solana_address("1" * 32), "1" * 32)
+        for bad in ("z" * 44, "2" * 32, ADDR + "\n", ADDR[:-1] + "0", None, 7):
+            self.assertIsNone(D.safe_solana_address(bad), bad)
+
     def test_slow_down_widens_interval(self):
         self.start()
         self.use({self.TOKEN: [(400, {"error": "slow_down"}), (400, {"error": "authorization_pending"})]})
