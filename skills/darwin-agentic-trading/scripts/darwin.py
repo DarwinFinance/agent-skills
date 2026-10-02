@@ -1310,7 +1310,8 @@ def _parse_key_file(raw):
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         raise HelperError("key_file_invalid", "That is not a Darwin key file (not JSON).")
-    if not isinstance(data, dict) or data.get("type") != "darwin-agent-key" or data.get("version") != 1:
+    # `type(...) is int`: JSON true and 1.0 compare equal to 1 in Python, and are not version 1.
+    if not isinstance(data, dict) or data.get("type") != "darwin-agent-key" or type(data.get("version")) is not int or data.get("version") != 1:
         raise HelperError("key_file_invalid", "That is not a Darwin key file (type/version).")
     key = data.get("key")
     if isinstance(key, str):

@@ -940,3 +940,26 @@ class Ancestors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeyFileFieldTypes(unittest.TestCase):
+    """Codex (server review) P3: JSON true / 1.0 equal 1 in Python but are not version 1."""
+
+    def _parse(self, obj):
+        return D._parse_key_file(json.dumps(obj).encode("utf-8"))
+
+    def test_version_must_be_integer_one(self):
+        good = {"type": "darwin-agent-key", "version": 1, "realm": "darwin.finance",
+                "agent_id": "agr_1", "key": "darwinAI_agent_" + "a" * 43}
+        self.assertEqual(self._parse(good)[1], "agr_1")
+        for bad in (True, 1.0, "1"):
+            with self.assertRaises(D.HelperError) as cm:
+                self._parse(dict(good, version=bad))
+            self.assertEqual(cm.exception.code, "key_file_invalid")
+
+    def test_non_string_realm_is_invalid_not_a_crash(self):
+        good = {"type": "darwin-agent-key", "version": 1, "agent_id": "agr_1", "key": "darwinAI_agent_" + "a" * 43}
+        for bad in (["darwin.finance"], {"a": 1}, None):
+            with self.assertRaises(D.HelperError) as cm:
+                self._parse(dict(good, realm=bad))
+            self.assertEqual(cm.exception.code, "key_file_invalid")
