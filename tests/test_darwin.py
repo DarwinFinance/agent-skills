@@ -1057,3 +1057,17 @@ class SkillDocs(unittest.TestCase):
         for name, text in self._docs().items():
             self.assertIsNone(lifetime.search(text), "%s claims a key lifetime" % name)
         self.assertIn("does not expire", self._docs()["SKILL.md"])
+
+    def test_no_doc_says_memory_by_default(self):
+        import re
+        memory_default = re.compile(r"memory,? by default|by default,? (?:keep|hold)[^.]{0,40}in memory|in memory unless|Keep it in memory;", re.I)
+        for name, text in self._docs().items():
+            self.assertIsNone(memory_default.search(text), "%s says memory by default" % name)
+
+    def test_readme_quotes_the_setup_line(self):
+        with open(os.path.join(HERE, "..", "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+        self.assertIn(
+            "Set up Darwin Agentic Trading using https://darwin.finance/agents/setup.md and save the API key so you can trade later.",
+            readme,
+        )

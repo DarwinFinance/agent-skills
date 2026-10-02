@@ -54,8 +54,14 @@ Updates: re-run the install command (`npx skills add …`), `/plugin update darw
 This skill is distributed only from this repository and from darwin.finance. It is **not**
 listed in the Anthropic or OpenAI plugin directories.
 
-No Python? Your agent can follow [darwin.finance/agents/setup.md](https://darwin.finance/agents/setup.md)
-directly; the key then passes through the chat once, so the helper is preferred.
+No Python? Paste this line to your agent instead; it follows
+[darwin.finance/agents/setup.md](https://darwin.finance/agents/setup.md) directly:
+
+```
+Set up Darwin Agentic Trading using https://darwin.finance/agents/setup.md and save the API key so you can trade later.
+```
+
+The key then passes through the chat once, so the helper is preferred.
 
 ## What's inside
 
