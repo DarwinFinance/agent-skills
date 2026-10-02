@@ -46,7 +46,7 @@ the Darwin app.
 | Hermes Agent | `hermes skills install DarwinFinance/agent-skills/skills/darwin-agentic-trading` |
 | Anything else | Copy `skills/darwin-agentic-trading/` into your agent's skills folder |
 
-Then tell your agent: **"Set up a Darwin agent."**
+Then tell your agent: **"Set up a Darwin agent and save the API key so you can trade later."**
 
 Updates: re-run the install command (`npx skills add …`), `/plugin update darwin@darwin-finance`
 (or enable auto-update for this marketplace), or `gemini extensions update`.

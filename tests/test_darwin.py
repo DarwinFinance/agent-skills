@@ -1081,3 +1081,9 @@ class SkillDocs(unittest.TestCase):
         self.assertIn("Then wait for your user's next instruction.", text)
         self.assertNotIn("agr_", text)
         self.assertNotIn("what you may trade, your limits", text)
+
+    def test_saving_rests_on_the_users_request(self):
+        text = " ".join(self._docs()["SKILL.md"].split())
+        self.assertIn("save the API key so you can trade later", text)
+        self.assertIn("If your user told you **not** to save the key", text)
+        self.assertIn("respect it", text)

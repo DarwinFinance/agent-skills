@@ -42,12 +42,17 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
   perps margin back to the agent's own wallet is allowed. Never offer to withdraw or
   transfer funds out, and never ask your user to fund you: funding and withdrawals are
   your user's, in the Darwin app.
-- **Where the key lives.** The helper stores it in the OS secret store (macOS Keychain,
-  Windows Credential Manager, or the Linux Secret Service). If there is none, it keeps
-  the key in memory only (a RAM-backed file, lost at reboot) and says so. It checks
-  the store works *before* pairing, because Darwin hands the key over only once. You
-  do not need to ask your user how to store it: go ahead, then tell them where it
-  lives (the `key_storage` / `stored_in` field).
+- **Where the key lives.** Your user asked you to set up Darwin so you can trade for
+  them later (Darwin's setup line says it outright: "save the API key so you can trade
+  later"), so the helper saves the key: in the OS secret store (macOS Keychain, Windows
+  Credential Manager, or the Linux Secret Service). If there is none, it keeps the key
+  in memory only (a RAM-backed file, lost at reboot) and says so. It checks the store
+  works *before* pairing, because Darwin hands the key over only once. You do not need
+  to ask your user how to store it. If your user told you **not** to save the key, say
+  before pairing that the helper keeps it so later commands can use it, and that
+  `darwin.py forget` deletes the local copy when they are done; then do what they
+  decide. Tell them where it lives (the `key_storage` / `stored_in` field) in your
+  short note after the welcome.
 - **Respect your platform.** If your platform asks permission to run a command or
   reach the network, or blocks an action, respect it. Never work around a sandbox,
   permission prompt or safety control; tell your user what is blocked instead.
