@@ -134,7 +134,8 @@ def pair_ok(mode=None, host=PROD):
 
 
 ADDR = "3FqARyyLHpV6rbwRbVW3hVTz8vrK49wBWPV4hHAGDzoD"
-ADDR_BLOCK = "Your Darwin agent's Solana address (send USDC or SOL on Solana to fund it):\n\n```\n" + ADDR + "\n```"
+LEAD_IN = "Your Darwin agent's Solana address (send any Solana-based asset to fund the account either from Darwin's UI or from somewhere else):"
+ADDR_BLOCK = LEAD_IN + "\n\n```\n" + ADDR + "\n```"
 
 
 def token_ok(host=PROD):
@@ -1029,3 +1030,30 @@ class LostHint(unittest.TestCase):
 
     def test_new_names_the_paired_key(self):
         self.assertIn('"Paired: Claude Code', D._lost_hint({"mode": "new", "client_name": "Claude Code"}))
+
+
+class SkillDocs(unittest.TestCase):
+    """The skill's own text matches what Darwin sends, and never says a paired key expires."""
+
+    SKILL_DIR = os.path.join(HERE, "..", "skills", "darwin-agentic-trading")
+
+    def _docs(self):
+        out = {}
+        for root, _dirs, files in os.walk(self.SKILL_DIR):
+            for f in files:
+                if f.endswith(".md"):
+                    path = os.path.join(root, f)
+                    with open(path, encoding="utf-8") as fh:
+                        out[os.path.relpath(path, self.SKILL_DIR)] = fh.read()
+        return out
+
+    def test_skill_md_quotes_the_welcome_lead_in(self):
+        self.assertEqual(D.ADDRESS_LEAD_IN, LEAD_IN)
+        self.assertIn(LEAD_IN, self._docs()["SKILL.md"])
+
+    def test_no_doc_claims_a_paired_key_expires(self):
+        import re
+        lifetime = re.compile(r"\b(?:7|seven)[ -]days?\b|\b(?:1|one)[ -]week\b|key (?:lasts|expires (?:on|in|after))", re.I)
+        for name, text in self._docs().items():
+            self.assertIsNone(lifetime.search(text), "%s claims a key lifetime" % name)
+        self.assertIn("does not expire", self._docs()["SKILL.md"])

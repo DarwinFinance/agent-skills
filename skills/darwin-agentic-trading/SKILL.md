@@ -93,13 +93,15 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
    `still_pending`, run `pair wait` again: approval can take up to 25 minutes.
    On `denied`, stop and ask your user what they want. On `expired`, start again only
    if your user still wants to connect. On `paired` the key is already stored.
+   A paired key does not expire (`expires_at` is `null`): it works until your user
+   revokes it, stops the agent or changes its limits.
 
 ## After pairing
 
 1. Show the `welcome` field to your user **verbatim, before anything else**. It starts
    with the new agent's Solana address, alone in a code block:
 
-       Your Darwin agent's Solana address (send USDC or SOL on Solana to fund it):
+       Your Darwin agent's Solana address (send any Solana-based asset to fund the account either from Darwin's UI or from somewhere else):
 
        ```
        <the agent's Solana address>

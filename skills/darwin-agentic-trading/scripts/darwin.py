@@ -1023,7 +1023,7 @@ def agent_id_from_url(url, realm):
 # A Solana public key in base58: 32-44 characters, no 0, O, I or l.
 _SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 # Darwin's welcome opens with the same lead-in; used only when there is no welcome to show.
-ADDRESS_LEAD_IN = "Your Darwin agent's Solana address (send USDC or SOL on Solana to fund it):"
+ADDRESS_LEAD_IN = "Your Darwin agent's Solana address (send any Solana-based asset to fund the account either from Darwin's UI or from somewhere else):"
 SHOW_WELCOME = ("Show `welcome` to your user verbatim, before anything else. It starts with the agent's Solana address "
                 "alone in a code block: keep the address inside that code block exactly as sent (never reformat it inline) "
                 "so your user's chat app shows a copy button next to it.")
