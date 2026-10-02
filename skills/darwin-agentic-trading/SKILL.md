@@ -111,10 +111,14 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
    shorten it or add to it: the code block is what makes your user's chat app show a
    copy button next to it. If `welcome` is missing, show `address_block` the same way
    instead. The address is also in `solana_address`.
-2. Run `darwin.py call GET /api/agent/v1/grant` and tell your user which agent you
-   are, what you may trade, your limits, and where the key lives.
-3. Before your first order, read all of https://darwin.finance/agents/docs/llms.txt
-   (fetch it raw; it is long). It is the trading guide and API reference.
+2. After the welcome, say at most one or two short sentences: where the key lives
+   (`stored_in`), and an invitation to explore their agent's page on Darwin, naming the
+   agent by its full name (`agent`) and linking the agent's page from the welcome (its
+   /agent/<name> link). Do not list limits, grant ids, internal ids, setup notes or API
+   details unless your user asks. Then wait for your user's next instruction.
+3. Before your first order, run `darwin.py call GET /api/agent/v1/grant` for your
+   limits, and read all of https://darwin.finance/agents/docs/llms.txt (fetch it raw;
+   it is long). It is the trading guide and API reference.
 4. Make every later API call with `darwin.py call <METHOD> <PATH> ['<json body>']`.
    It adds the key. It never retries a non-GET on its own: follow llms.txt's
    idempotency rules before retrying an order.

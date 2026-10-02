@@ -1027,6 +1027,10 @@ ADDRESS_LEAD_IN = "Your Darwin agent's Solana address (send any Solana-based ass
 SHOW_WELCOME = ("Show `welcome` to your user verbatim, before anything else. It starts with the agent's Solana address "
                 "alone in a code block: keep the address inside that code block exactly as sent (never reformat it inline) "
                 "so your user's chat app shows a copy button next to it.")
+AFTER_SETUP = ("After that, say at most one or two short sentences: where the key lives, and an invitation to explore "
+               "their agent's page on Darwin, naming the agent by its full name and linking its page from the welcome. "
+               "Do not list limits, grant ids, internal ids, setup notes or API details unless your user asks. "
+               "Then wait for your user's next instruction.")
 SHOW_ADDRESS_BLOCK = ("There is no `welcome` to show, so show your user `address_block` verbatim first, keeping the address "
                       "inside its code block (never inline) so their chat app shows a copy button next to it.")
 
@@ -1279,7 +1283,8 @@ def _finish_pairing(state, p, realm, backend, host, resp):
     show = SHOW_WELCOME if welcome is not None else (SHOW_ADDRESS_BLOCK if address else "")
     out = {"status": "paired", "agent": agent_name or hello_agent, "agent_id": agent_id, "realm": realm, "mode": p.get("mode", "new"),
            "stored_in": backend.description, "key_name": key_name, "welcome": welcome,
-           "next": ("%s Then run `call GET /api/agent/v1/grant` and read %s/agents/docs/llms.txt before trading." % (show, realm_origin(realm))).strip()}
+           "next": ("%s %s Before your first order, run `call GET /api/agent/v1/grant` and read %s/agents/docs/llms.txt." % (
+               show, AFTER_SETUP, realm_origin(realm))).strip()}
     with_address(out, welcome, address)
     if hello_err:
         out["hello_error"] = hello_err

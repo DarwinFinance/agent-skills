@@ -317,6 +317,8 @@ class PairWait(Base):
         self.assertNotIn("address_block", out)  # the welcome already carries it
         self.assertIn("code block", out["next"])
         self.assertIn("never reformat it inline", out["next"])
+        self.assertIn("at most one or two short sentences", out["next"])
+        self.assertIn("Then wait for your user's next instruction.", out["next"])
 
     def test_no_welcome_falls_back_to_an_address_block(self):
         self.start()
@@ -1071,3 +1073,11 @@ class SkillDocs(unittest.TestCase):
             "Set up Darwin Agentic Trading using https://darwin.finance/agents/setup.md and save the API key so you can trade later.",
             readme,
         )
+
+    def test_after_setup_is_short_and_names_the_agent(self):
+        text = " ".join(self._docs()["SKILL.md"].split())
+        self.assertIn("say at most one or two short sentences", text)
+        self.assertIn("naming the agent by its full name", text)
+        self.assertIn("Then wait for your user's next instruction.", text)
+        self.assertNotIn("agr_", text)
+        self.assertNotIn("what you may trade, your limits", text)
