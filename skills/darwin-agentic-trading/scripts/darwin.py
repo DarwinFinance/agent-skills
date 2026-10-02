@@ -323,28 +323,40 @@ def _is_link(st):
     return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _REPARSE)
 
 
+def _check_chain(path, uid):
+    """Walk every component of `path` from the leaf's parent to /. Each existing one
+    (missing ones are skipped, not a reason to stop) must be owned by us or root; a
+    directory must not be writable by others unless sticky (like /tmp). Symlinks are
+    judged by lstat, so another user's link cannot hide behind its target's owner."""
+    cur = os.path.dirname(path)
+    while True:
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError:
+            st = None
+        except OSError:
+            raise HelperError("state_dir_unsafe", "Cannot inspect %s; refusing to keep state under it." % cur)
+        if st is not None:
+            if st.st_uid not in (uid, 0):
+                raise HelperError("state_dir_unsafe", "%s is owned by another user; refusing to keep state under it." % cur)
+            if stat.S_ISDIR(st.st_mode) and st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
+                raise HelperError("state_dir_unsafe", "%s is writable by other users; refusing to keep state under it." % cur)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return
+        cur = parent
+
+
 def check_ancestors(path):
-    """POSIX: every existing ancestor must be owned by us or root, and not writable by
-    others unless sticky (like /tmp). Otherwise someone else could swap the directory."""
+    """POSIX: the lexical path AND the path with every symlink resolved must both be safe."""
     uid = _uid()
     if uid is None:
         return
-    cur = os.path.dirname(os.path.abspath(path))
-    seen = set()
-    while cur and cur not in seen:
-        seen.add(cur)
-        try:
-            st = os.stat(cur)
-        except OSError:
-            break
-        if st.st_uid not in (uid, 0):
-            raise HelperError("state_dir_unsafe", "%s is owned by another user; refusing to keep state under it." % cur)
-        if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
-            raise HelperError("state_dir_unsafe", "%s is writable by other users; refusing to keep state under it." % cur)
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
+    lexical = os.path.abspath(path)
+    _check_chain(lexical, uid)
+    resolved = os.path.realpath(lexical)
+    if resolved != lexical:
+        _check_chain(resolved, uid)
 
 
 def ensure_private_dir(path):
@@ -951,6 +963,16 @@ def load_key(entry):
     return key
 
 
+def safe_agent_id(value):
+    """An agent id is an identifier, never anything secret-shaped (a hostile answer could
+    put the key there, and ids go into keys.json and secret-store account names)."""
+    if not isinstance(value, str) or not AGENT_ID_RE.match(value):
+        return None
+    if _SECRET_SHAPE.search(value) or any(sec in value or value in sec for sec in _KNOWN_SECRETS if len(value) >= 8):
+        return None
+    return value
+
+
 def agent_id_from_url(url, realm):
     if not isinstance(url, str):
         return None
@@ -958,7 +980,7 @@ def agent_id_from_url(url, realm):
     if not url.startswith(prefix):
         return None
     tail = url[len(prefix):].split("?")[0].split("#")[0].strip("/")
-    return tail if AGENT_ID_RE.match(tail) else None
+    return safe_agent_id(tail)
 
 
 def say_hello(realm, key, host_agent):
@@ -1169,29 +1191,77 @@ def _finish_pairing(state, p, realm, backend, host, resp):
     return 0
 
 
-def _read_key_file(path):
-    try:
-        st = os.lstat(path)
-    except OSError:
-        raise HelperError("key_file_unreadable", "Cannot find that key file.")
-    if _is_link(st):
-        raise HelperError("key_file_unsafe", "The key file is a symlink; refusing to read it.")
-    if not stat.S_ISREG(st.st_mode):
-        raise HelperError("key_file_unsafe", "The key file is not a regular file.")
-    uid = _uid()
-    if uid is not None and st.st_uid != uid:
-        raise HelperError("key_file_unsafe", "The key file is owned by another user; refusing to read it.")
-    if st.st_size > KEY_FILE_MAX_BYTES:
-        raise HelperError("key_file_invalid", "That is not a Darwin key file (too large).")
-    try:
-        fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
-    except OSError:
-        raise HelperError("key_file_unreadable", "Cannot open that key file.")
-    with os.fdopen(fd, "rb") as f:
-        fst = os.fstat(f.fileno())
-        if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
-            raise HelperError("key_file_unsafe", "The key file changed while it was being opened.")
-        raw = f.read(KEY_FILE_MAX_BYTES + 1)
+_HAS_DIRFD = os.open in getattr(os, "supports_dir_fd", set()) and os.unlink in getattr(os, "supports_dir_fd", set())
+
+
+class KeyFile(object):
+    """A key file opened through a handle on its PARENT directory (POSIX), so the file that
+    is later deleted is exactly the one that was read, even if a path component is swapped."""
+
+    def __init__(self, path):
+        self.path = path
+        self.name = os.path.basename(path)
+        self.dfd = None
+        self.identity = None
+
+    def close(self):
+        if self.dfd is not None:
+            os.close(self.dfd)
+            self.dfd = None
+
+    def _lstat(self):
+        if self.dfd is not None:
+            return os.stat(self.name, dir_fd=self.dfd, follow_symlinks=False)
+        return os.lstat(self.path)
+
+    def read(self):
+        if _HAS_DIRFD:
+            try:
+                self.dfd = os.open(os.path.dirname(self.path) or ".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            except OSError:
+                raise HelperError("key_file_unreadable", "Cannot open the folder holding that key file.")
+        try:
+            st = self._lstat()
+        except OSError:
+            raise HelperError("key_file_unreadable", "Cannot find that key file.")
+        if _is_link(st):
+            raise HelperError("key_file_unsafe", "The key file is a symlink; refusing to read it.")
+        if not stat.S_ISREG(st.st_mode):
+            raise HelperError("key_file_unsafe", "The key file is not a regular file.")
+        uid = _uid()
+        if uid is not None and st.st_uid != uid:
+            raise HelperError("key_file_unsafe", "The key file is owned by another user; refusing to read it.")
+        if st.st_size > KEY_FILE_MAX_BYTES:
+            raise HelperError("key_file_invalid", "That is not a Darwin key file (too large).")
+        try:
+            flags = os.O_RDONLY | _O_NOFOLLOW | _O_BINARY
+            fd = os.open(self.name, flags, dir_fd=self.dfd) if self.dfd is not None else os.open(self.path, flags)
+        except OSError:
+            raise HelperError("key_file_unreadable", "Cannot open that key file.")
+        with os.fdopen(fd, "rb") as f:
+            fst = os.fstat(f.fileno())
+            if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+                raise HelperError("key_file_unsafe", "The key file changed while it was being opened.")
+            raw = f.read(KEY_FILE_MAX_BYTES + 1)
+        self.identity = (st.st_dev, st.st_ino)
+        return raw
+
+    def delete(self):
+        """Delete the file read, if that name still names it. Returns None or a reason."""
+        try:
+            st = self._lstat()
+            if _is_link(st) or (st.st_dev, st.st_ino) != self.identity:
+                return "file_changed"
+            if self.dfd is not None:
+                os.unlink(self.name, dir_fd=self.dfd)
+            else:
+                os.unlink(self.path)
+            return None
+        except OSError as e:
+            return type(e).__name__
+
+
+def _parse_key_file(raw):
     if len(raw) > KEY_FILE_MAX_BYTES:
         raise HelperError("key_file_invalid", "That is not a Darwin key file (too large).")
     try:
@@ -1206,17 +1276,24 @@ def _read_key_file(path):
     realm_host = data.get("realm")
     if realm_host not in HOST_TO_REALM:
         raise HelperError("key_file_invalid", "The key file names an unknown realm; only darwin.finance and beta.darwin.finance are accepted.")
-    agent_id = data.get("agent_id")
-    if not isinstance(agent_id, str) or not AGENT_ID_RE.match(agent_id):
-        raise HelperError("key_file_invalid", "The key file has no valid agent_id.")
     if not isinstance(key, str) or not KEY_RE.match(key):
         raise HelperError("key_file_invalid", "The key file has no valid Darwin agent key.")
-    return HOST_TO_REALM[realm_host], agent_id, key, (st.st_dev, st.st_ino)
+    agent_id = safe_agent_id(data.get("agent_id"))
+    if not agent_id:
+        raise HelperError("key_file_invalid", "The key file has no valid agent_id.")
+    return HOST_TO_REALM[realm_host], agent_id, key
 
 
 def cmd_import(args):
-    path = os.path.expanduser(args.file)
-    realm, agent_id, key, identity = _read_key_file(path)
+    kf = KeyFile(os.path.abspath(os.path.expanduser(args.file)))
+    try:
+        return _import(args, kf)
+    finally:
+        kf.close()
+
+
+def _import(args, kf):
+    realm, agent_id, key = _parse_key_file(kf.read())
     # 🔴 The file's `realm` is unsigned. It must AGREE with the realm the agent was told
     # to use (prod unless `--realm beta` was passed explicitly), so an edited file can
     # never on its own make the helper send a key somewhere other than intended.
@@ -1245,16 +1322,8 @@ def cmd_import(args):
     deleted = False
     delete_error = None
     if not args.keep_file:
-        # Delete only the file that was read: if the path now names something else, leave it.
-        try:
-            st = os.lstat(path)
-            if _is_link(st) or (st.st_dev, st.st_ino) != identity:
-                delete_error = "file_changed"
-            else:
-                os.unlink(path)
-                deleted = True
-        except OSError as e:
-            delete_error = type(e).__name__
+        delete_error = kf.delete()
+        deleted = delete_error is None
     out = {"status": "imported", "agent": agent_name, "agent_id": agent_id, "realm": realm, "stored_in": backend.description,
            "key_file_deleted": deleted, "welcome": welcome,
            "next": "Show `welcome` (if any) to your user verbatim. Then run `call GET /api/agent/v1/grant`."}

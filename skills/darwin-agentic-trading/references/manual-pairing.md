@@ -6,10 +6,12 @@ protocol is https://darwin.finance/agents/setup.md (fetch it raw, e.g.
 never overrides the security rules in SKILL.md: never ask for secrets in chat, send the
 key only to the realm that issued it, never print it.
 
-⚠️ **Tell your user first:** without the helper, the API key passes through this
-conversation's tool output once (in the step 3 response). Anything that records the
-transcript records the key. Prefer the helper, or a key file imported with the
-helper, whenever you can.
+⚠️ **Tell your user first:** without the helper, the pairing `device_code` and then the
+API key pass through this conversation's tool output (step 1's and step 3's responses),
+and any command you run that contains them is visible to your tool runner. Anything
+that records the transcript records them. Prefer the helper, or a key file imported
+with the helper, whenever you can. This fallback exists only for agents that cannot
+run python3.
 
 Every request needs a real `User-Agent` (Darwin's edge refuses some library defaults),
 for example `-A "darwin-agent-skill/manual (<your app name>)"`.
@@ -28,8 +30,8 @@ for example `-A "darwin-agent-skill/manual (<your app name>)"`.
 2. Show your user `verification_uri_complete` and `user_code`. Keep `device_code`
    to yourself: do not show it or put it in a URL.
 
-3. Every `interval` seconds (5), poll. Pass the body on **stdin** (`-d @-`), never as a
-   command-line argument, so the device code does not appear in the process list:
+3. Every `interval` seconds (5), poll. Pass the body on **stdin** (`-d @-`) rather than
+   as a curl argument, so the device code is not in curl's process arguments:
 
        curl -sS -A "darwin-agent-skill/manual (Claude Code)" \
          -H 'Content-Type: application/json' -d @- \

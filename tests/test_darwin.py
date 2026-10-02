@@ -372,6 +372,16 @@ class PairWait(Base):
         code, out = self.run_cli("pair", "wait")
         self.assertEqual(out["status"], "lost")
 
+    def test_key_as_agent_id_in_token_answer_is_refused(self):
+        self.start()
+        bad = token_ok()
+        bad[1]["agent"]["agentPageUrl"] = PROD + "/agent-account/" + KEY
+        self.use({self.TOKEN: [bad]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "bad_response")
+        self.assertEqual({k: v for k, v in FakeStore.data.items() if KEY in k}, {})
+        self.assertFalse(os.path.exists(os.path.join(self.state_dir, "keys.json")))
+
     def test_store_failure_after_issue_never_prints_key(self):
         self.start()
         FakeStore.fail_put_after = FakeStore.puts + 1  # preflight passes, the real put fails
@@ -630,6 +640,13 @@ class Import(Base):
         with open(path) as f:
             self.assertEqual(f.read(), "someone else's file")
 
+    def test_secret_shaped_agent_id_refused(self):
+        path = self.keyfile(agent_id=KEY2)
+        op = self.use({})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["error"], "key_file_invalid")
+        self.assertEqual(op.requests, [])
+
     def test_hostile_server_metadata_never_persisted(self):
         path = self.keyfile()
         self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})],
@@ -801,6 +818,32 @@ class Ancestors(unittest.TestCase):
             with self.assertRaises(D.HelperError) as cm:
                 D.ensure_private_dir(os.path.join(shared, "state"))
             self.assertEqual(cm.exception.code, "state_dir_unsafe")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_missing_parent_does_not_stop_the_walk(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            shared = os.path.join(tmp, "shared")
+            os.mkdir(shared)
+            os.chmod(shared, 0o777)
+            with self.assertRaises(D.HelperError):
+                D.check_ancestors(os.path.join(shared, "missing", "deeper", "state"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_symlink_ancestor_resolved_chain_checked(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            shared = os.path.join(tmp, "shared")
+            os.mkdir(shared)
+            os.chmod(shared, 0o777)
+            target = os.path.join(shared, "t")
+            os.mkdir(target, 0o700)
+            link = os.path.join(tmp, "link")
+            os.symlink(target, link)
+            with self.assertRaises(D.HelperError):
+                D.check_ancestors(os.path.join(link, "state"))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
