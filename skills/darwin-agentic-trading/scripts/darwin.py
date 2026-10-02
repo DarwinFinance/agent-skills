@@ -323,40 +323,57 @@ def _is_link(st):
     return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _REPARSE)
 
 
-def _check_chain(path, uid):
-    """Walk every component of `path` from the leaf's parent to /. Each existing one
-    (missing ones are skipped, not a reason to stop) must be owned by us or root; a
-    directory must not be writable by others unless sticky (like /tmp). Symlinks are
-    judged by lstat, so another user's link cannot hide behind its target's owner."""
-    cur = os.path.dirname(path)
-    while True:
+def _judge(path, st, owners, allow_sticky):
+    if st.st_uid not in owners:
+        raise HelperError("state_dir_unsafe", "%s is owned by another user; refusing to use it." % path)
+    if stat.S_ISDIR(st.st_mode) and st.st_mode & 0o022 and not (allow_sticky and st.st_mode & stat.S_ISVTX):
+        raise HelperError("state_dir_unsafe", "%s is writable by other users; refusing to use it." % path)
+
+
+def walk_safely(path, owners, allow_sticky=True, max_hops=40):
+    """Resolve `path` one component at a time, following every symlink hop ourselves.
+    Every directory traversed and every symlink met (and so every hop's ancestors) must
+    be owned by one of `owners` and not writable by others (sticky dirs like /tmp allowed
+    when `allow_sticky`). Missing components end the walk: what does not exist yet will be
+    created by us, inside an already-judged directory. Returns the resolved path."""
+    pending = [c for c in os.path.abspath(path).split(os.sep) if c]
+    cur = os.sep
+    _judge(cur, os.lstat(cur), owners, allow_sticky)
+    hops = 0
+    while pending:
+        comp = pending.pop(0)
+        if comp == ".":
+            continue
+        if comp == "..":
+            cur = os.path.dirname(cur) or os.sep
+            continue
+        nxt = os.path.join(cur, comp)
         try:
-            st = os.lstat(cur)
+            st = os.lstat(nxt)
         except FileNotFoundError:
-            st = None
+            return os.path.join(nxt, *pending) if pending else nxt
         except OSError:
-            raise HelperError("state_dir_unsafe", "Cannot inspect %s; refusing to keep state under it." % cur)
-        if st is not None:
-            if st.st_uid not in (uid, 0):
-                raise HelperError("state_dir_unsafe", "%s is owned by another user; refusing to keep state under it." % cur)
-            if stat.S_ISDIR(st.st_mode) and st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
-                raise HelperError("state_dir_unsafe", "%s is writable by other users; refusing to keep state under it." % cur)
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            return
-        cur = parent
+            raise HelperError("state_dir_unsafe", "Cannot inspect %s; refusing to use it." % nxt)
+        _judge(nxt, st, owners, allow_sticky)
+        if stat.S_ISLNK(st.st_mode):
+            hops += 1
+            if hops > max_hops:
+                raise HelperError("state_dir_unsafe", "Too many symlinks under %s." % path)
+            target = os.readlink(nxt)
+            if os.path.isabs(target):
+                cur = os.sep
+            pending = [c for c in target.split(os.sep) if c] + pending
+            continue
+        cur = nxt
+    return cur
 
 
 def check_ancestors(path):
-    """POSIX: the lexical path AND the path with every symlink resolved must both be safe."""
+    """POSIX: every directory and symlink hop leading to `path`'s parent is ours or root's."""
     uid = _uid()
     if uid is None:
         return
-    lexical = os.path.abspath(path)
-    _check_chain(lexical, uid)
-    resolved = os.path.realpath(lexical)
-    if resolved != lexical:
-        _check_chain(resolved, uid)
+    walk_safely(os.path.dirname(os.path.abspath(path)), (uid, 0))
 
 
 def ensure_private_dir(path):
@@ -756,11 +773,14 @@ class LinuxSecretTool(object):
         self.exe = None
         for cand in ("/usr/bin/secret-tool", "/bin/secret-tool", "/usr/local/bin/secret-tool"):
             try:
-                st = os.stat(cand)
-            except OSError:
+                # Every directory and symlink hop on the way, and the binary itself, must be
+                # root's and not writable by anyone else (no sticky exception here).
+                real = walk_safely(cand, (0,), allow_sticky=False)
+                st = os.stat(real)
+            except (OSError, HelperError):
                 continue
-            if st.st_uid == 0 and not st.st_mode & 0o022:
-                self.exe = cand
+            if stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022:
+                self.exe = real
                 break
         if not self.exe:
             raise StoreError("no root-owned secret-tool in /usr/bin, /bin or /usr/local/bin")
@@ -1247,8 +1267,13 @@ class KeyFile(object):
         return raw
 
     def delete(self):
-        """Delete the file read, if that name still names it. Returns None or a reason."""
+        """Delete the file read, if that name still names it. Returns None or a reason.
+        Never in a folder other users can write to (they could swap the name in between)."""
         try:
+            dst = os.fstat(self.dfd) if self.dfd is not None else os.stat(os.path.dirname(self.path) or ".")
+            uid = _uid()
+            if uid is not None and (dst.st_uid != uid or dst.st_mode & 0o022):
+                return "shared_folder"
             st = self._lstat()
             if _is_link(st) or (st.st_dev, st.st_ino) != self.identity:
                 return "file_changed"
@@ -1331,6 +1356,8 @@ def _import(args, kf):
         out["detail"] = "The key file was deleted after import."
     elif args.keep_file:
         out["detail"] = "The key file was kept (--keep-file). Tell your user to delete it when it is no longer needed."
+    elif delete_error == "shared_folder":
+        out["detail"] = "The key file is in a folder other users can write to, so it was not deleted automatically. Tell your user to delete it."
     else:
         out["detail"] = "Could not delete the key file (%s). Tell your user to delete it." % delete_error
     if hello_err:

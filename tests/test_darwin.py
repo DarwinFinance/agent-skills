@@ -640,6 +640,19 @@ class Import(Base):
         with open(path) as f:
             self.assertEqual(f.read(), "someone else's file")
 
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_key_file_in_shared_folder_not_auto_deleted(self):
+        shared = os.path.join(self.tmp, "shared")
+        os.mkdir(shared)
+        path = os.path.join(shared, "k.json")
+        os.rename(self.keyfile(), path)
+        os.chmod(shared, 0o777)
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported")
+        self.assertFalse(out["key_file_deleted"])
+        self.assertTrue(os.path.exists(path))
+
     def test_secret_shaped_agent_id_refused(self):
         path = self.keyfile(agent_id=KEY2)
         op = self.use({})
@@ -844,6 +857,24 @@ class Ancestors(unittest.TestCase):
             os.symlink(target, link)
             with self.assertRaises(D.HelperError):
                 D.check_ancestors(os.path.join(link, "state"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_chained_symlink_through_shared_dir_refused(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            trusted = os.path.join(tmp, "trusted")
+            shared = os.path.join(tmp, "shared")
+            os.mkdir(trusted, 0o700)
+            os.mkdir(shared)
+            os.chmod(shared, 0o777)
+            target = os.path.join(trusted, "target")
+            os.mkdir(target, 0o700)
+            os.symlink(target, os.path.join(shared, "relay"))
+            os.symlink(os.path.join(shared, "relay"), os.path.join(trusted, "front"))
+            with self.assertRaises(D.HelperError):
+                D.check_ancestors(os.path.join(trusted, "front", "state"))
+            D.check_ancestors(os.path.join(target, "state"))  # the direct path is fine
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
