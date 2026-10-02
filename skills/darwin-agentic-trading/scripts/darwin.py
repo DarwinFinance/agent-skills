@@ -1020,19 +1020,55 @@ def agent_id_from_url(url, realm):
     return safe_agent_id(tail)
 
 
+# A Solana public key in base58: 32-44 characters, no 0, O, I or l.
+_SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+# Darwin's welcome opens with the same lead-in; used only when there is no welcome to show.
+ADDRESS_LEAD_IN = "Your Darwin agent's Solana address (send USDC or SOL on Solana to fund it):"
+SHOW_WELCOME = ("Show `welcome` to your user verbatim, before anything else. It starts with the agent's Solana address "
+                "alone in a code block: keep the address inside that code block exactly as sent (never reformat it inline) "
+                "so your user's chat app shows a copy button next to it.")
+SHOW_ADDRESS_BLOCK = ("There is no `welcome` to show, so show your user `address_block` verbatim first, keeping the address "
+                      "inside its code block (never inline) so their chat app shows a copy button next to it.")
+
+
+def safe_solana_address(value):
+    """A server-supplied wallet address that may be shown: a Solana public key and nothing else."""
+    if not isinstance(value, str) or not _SOLANA_ADDRESS_RE.match(value):
+        return None
+    if any(sec in value or value in sec for sec in _KNOWN_SECRETS):
+        return None
+    return value
+
+
+def address_block(address):
+    """The lead-in, a blank line, then the address ALONE in a fenced code block (chat UIs add a copy button)."""
+    return "%s\n\n```\n%s\n```" % (ADDRESS_LEAD_IN, address)
+
+
 def say_hello(realm, key, host_agent):
-    """GET /hello: returns (welcome or None, agent name or None). Failures are reported, not fatal."""
+    """GET /hello: returns (welcome or None, agent name or None, Solana address or None, error or None).
+    Failures are reported, not fatal."""
     try:
         status, body = http(realm, "GET", HELLO_PATH, key=key, host_agent=host_agent)
     except HelperError as e:
-        return None, None, e.code
+        return None, None, None, e.code
     if status != 200 or not isinstance(body, dict):
-        return None, None, "hello_http_%d" % status
+        return None, None, None, "hello_http_%d" % status
     welcome = body.get("welcome") if isinstance(body.get("welcome"), str) else None
     if welcome is not None:
         welcome = "[REDACTED]" if any(sec in welcome for sec in _KNOWN_SECRETS) else redact(welcome[:4000])
     agent = body.get("agent") if isinstance(body.get("agent"), str) else None
-    return welcome, agent, None
+    return welcome, agent, safe_solana_address(body.get("solanaAddress")), None
+
+
+def with_address(out, welcome, address):
+    """Adds the agent's Solana address to a command's output: `solana_address`, and, when there is
+    no welcome to carry it, `address_block` (the same fenced block Darwin's welcome opens with)."""
+    if address:
+        out["solana_address"] = address
+        if welcome is None:
+            out["address_block"] = address_block(address)
+    return out
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -1223,11 +1259,15 @@ def _finish_pairing(state, p, realm, backend, host, resp):
     agent_name = safe_text(agent.get("name"), 80)
     record_key(state, realm, agent_id, agent_name, backend, host, "pairing")
     state.clear_pending()  # only now: the key is stored and indexed
-    welcome, hello_agent, hello_err = say_hello(realm, token, host)
+    welcome, hello_agent, hello_address, hello_err = say_hello(realm, token, host)
     hello_agent = safe_text(hello_agent, 80)
+    # The key answer's own address first (it names the agent this key was minted for), else /hello's.
+    address = safe_solana_address(agent.get("solanaAddress")) or hello_address
+    show = SHOW_WELCOME if welcome is not None else (SHOW_ADDRESS_BLOCK if address else "")
     out = {"status": "paired", "agent": agent_name or hello_agent, "agent_id": agent_id, "realm": realm, "mode": p.get("mode", "new"),
            "stored_in": backend.description, "key_name": key_name, "welcome": welcome,
-           "next": "Show `welcome` to your user verbatim first. Then run `call GET /api/agent/v1/grant` and read %s/agents/docs/llms.txt before trading." % realm_origin(realm)}
+           "next": ("%s Then run `call GET /api/agent/v1/grant` and read %s/agents/docs/llms.txt before trading." % (show, realm_origin(realm))).strip()}
+    with_address(out, welcome, address)
     if hello_err:
         out["hello_error"] = hello_err
     emit(out)
@@ -1366,7 +1406,9 @@ def _import(args, kf):
             store_key(backend, realm, agent_id, key)
         except Exception as e:
             raise HelperError("store_failed", "Could not store the key in %s (%s). Nothing was imported; the key file was kept." % (backend.description, redact(str(e))[:80]))
-        welcome, agent_name, hello_err = say_hello(realm, key, host)
+        welcome, agent_name, hello_address, hello_err = say_hello(realm, key, host)
+        # /grant's own `wallet` (this key's agent) else /hello's.
+        address = safe_solana_address(grant.get("wallet")) or hello_address
         record_key(state, realm, agent_id, agent_name, backend, host, "key_file")
     deleted = False
     delete_error = None
@@ -1375,7 +1417,9 @@ def _import(args, kf):
         deleted = delete_error is None
     out = {"status": "imported", "agent": agent_name, "agent_id": agent_id, "realm": realm, "stored_in": backend.description,
            "key_file_deleted": deleted, "welcome": welcome,
-           "next": "Show `welcome` (if any) to your user verbatim. Then run `call GET /api/agent/v1/grant`."}
+           "next": ("%s Then run `call GET /api/agent/v1/grant`." % (
+               SHOW_WELCOME if welcome is not None else (SHOW_ADDRESS_BLOCK if address else ""))).strip()}
+    with_address(out, welcome, address)
     if deleted:
         out["detail"] = "The key file was deleted after import."
     elif args.keep_file:

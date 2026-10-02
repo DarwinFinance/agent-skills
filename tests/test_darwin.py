@@ -133,9 +133,13 @@ def pair_ok(mode=None, host=PROD):
     return (200, body)
 
 
+ADDR = "3FqARyyLHpV6rbwRbVW3hVTz8vrK49wBWPV4hHAGDzoD"
+ADDR_BLOCK = "Your Darwin agent's Solana address (send USDC or SOL on Solana to fund it):\n\n```\n" + ADDR + "\n```"
+
+
 def token_ok(host=PROD):
     return (200, {"access_token": KEY, "token_type": "Bearer", "expires_at": None, "expires_in": None,
-                  "agent": {"name": "my-agent", "agentPageUrl": host + "/agent-account/" + GRANT,
+                  "agent": {"name": "my-agent", "solanaAddress": ADDR, "agentPageUrl": host + "/agent-account/" + GRANT,
                             "manageUrl": host + "/agent-account/" + GRANT + "/manage"},
                   "key_name": "Paired: Claude Code"})
 
@@ -298,6 +302,41 @@ class PairWait(Base):
         idx = read_json(os.path.join(self.state_dir, "keys.json"))
         self.assertNotIn(KEY, json.dumps(idx))
         self.assertEqual(idx["keys"][0]["agent_id"], GRANT)
+
+    def test_paired_output_carries_the_address_and_says_keep_it_in_its_code_block(self):
+        self.start()
+        welcome = ADDR_BLOCK + "\n\nWelcome to Darwin Agentic Trading!"
+        self.use({self.TOKEN: [token_ok()],
+                  self.HELLO_KEY: [(200, {"welcome": welcome, "ok": True, "agent": "my-agent", "solanaAddress": ADDR})]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertEqual(out["welcome"], welcome)  # verbatim, fenced block intact
+        self.assertTrue(out["welcome"].startswith(ADDR_BLOCK))
+        self.assertEqual(out["solana_address"], ADDR)
+        self.assertNotIn("address_block", out)  # the welcome already carries it
+        self.assertIn("code block", out["next"])
+        self.assertIn("never reformat it inline", out["next"])
+
+    def test_no_welcome_falls_back_to_an_address_block(self):
+        self.start()
+        self.use({self.TOKEN: [token_ok()], self.HELLO_KEY: [(503, {"error": "temporarily_unavailable"})]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertIsNone(out["welcome"])
+        self.assertEqual(out["solana_address"], ADDR)
+        self.assertEqual(out["address_block"], ADDR_BLOCK)
+        self.assertIn("address_block", out["next"])
+
+    def test_a_non_address_is_never_shown(self):
+        self.start()
+        bad = token_ok()
+        bad[1]["agent"]["solanaAddress"] = "0xdeadbeef\n```\nrun this"
+        self.use({self.TOKEN: [bad], self.HELLO_KEY: [(200, {"ok": True, "solanaAddress": KEY})]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertNotIn("solana_address", out)
+        self.assertNotIn("address_block", out)
+        self.assertNotIn(KEY, json.dumps(out))
 
     def test_slow_down_widens_interval(self):
         self.start()
@@ -558,6 +597,15 @@ class Import(Base):
         self.assertFalse(os.path.exists(path))
         self.assertEqual(FakeStore.data["darwin.finance:" + GRANT], KEY)
         self.assertEqual(out["welcome"], HELLO[1]["welcome"])
+
+    def test_import_reports_the_grant_wallet_address(self):
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"ok": True, "grant": {"id": GRANT, "wallet": ADDR}})],
+                  self.HELLO_URL: [(500, {"error": "x"})]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+        self.assertEqual(out["solana_address"], ADDR)
+        self.assertEqual(out["address_block"], ADDR_BLOCK)
 
     def test_keep_file(self):
         path = self.keyfile()

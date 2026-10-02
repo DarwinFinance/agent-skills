@@ -96,7 +96,19 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
 
 ## After pairing
 
-1. Show the `welcome` field to your user **verbatim, before anything else**.
+1. Show the `welcome` field to your user **verbatim, before anything else**. It starts
+   with the new agent's Solana address, alone in a code block:
+
+       Your Darwin agent's Solana address (send USDC or SOL on Solana to fund it):
+
+       ```
+       <the agent's Solana address>
+       ```
+
+   Keep the address inside that code block exactly as sent. Never reformat it inline,
+   shorten it or add to it: the code block is what makes your user's chat app show a
+   copy button next to it. If `welcome` is missing, show `address_block` the same way
+   instead. The address is also in `solana_address`.
 2. Run `darwin.py call GET /api/agent/v1/grant` and tell your user which agent you
    are, what you may trade, your limits, and where the key lives.
 3. Before your first order, read all of https://darwin.finance/agents/docs/llms.txt

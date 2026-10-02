@@ -47,7 +47,9 @@ for example `-A "darwin-agent-skill/manual (<your app name>)"`.
    `Authorization` header from a file or stdin, e.g. `curl -H @-`).
 
 4. `GET https://darwin.finance/api/agent/v1/hello` with
-   `Authorization: Bearer <access_token>`; show `welcome` to your user verbatim.
+   `Authorization: Bearer <access_token>`; show `welcome` to your user verbatim. It
+   starts with the agent's Solana address alone in a code block: keep it in that code
+   block (never inline) so your user's chat app shows a copy button next to it.
 
 5. Read https://darwin.finance/agents/docs/llms.txt before trading, then
    `GET /api/agent/v1/grant` for your limits.
