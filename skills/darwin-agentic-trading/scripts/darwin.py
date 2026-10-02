@@ -1316,7 +1316,7 @@ def _parse_key_file(raw):
     if isinstance(key, str):
         remember_secret(key)
     realm_host = data.get("realm")
-    if realm_host not in HOST_TO_REALM:
+    if not isinstance(realm_host, str) or realm_host not in HOST_TO_REALM:
         raise HelperError("key_file_invalid", "The key file names an unknown realm; only darwin.finance and beta.darwin.finance are accepted.")
     if not isinstance(key, str) or not KEY_RE.match(key):
         raise HelperError("key_file_invalid", "The key file has no valid Darwin agent key.")

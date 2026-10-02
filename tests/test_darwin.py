@@ -591,6 +591,10 @@ class Import(Base):
             dict(agent_id="../../etc"),
             dict(version=2),
             dict(key=None),
+            dict(realm=[]),
+            dict(realm={}),
+            dict(agent_id=["x"]),
+            dict(key={"a": 1}),
         ]
         for over in cases:
             path = self.keyfile(**over)  # written and imported one at a time
