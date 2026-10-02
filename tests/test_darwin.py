@@ -356,6 +356,22 @@ class PairWait(Base):
         self.assertEqual(out["status"], "lost")
         self.assertIn("revoke", out["detail"])
 
+    def test_crash_mid_poll_then_expired_reports_lost(self):
+        self.start()
+        self.use({self.TOKEN: [KeyboardInterrupt()]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "interrupted")
+        self.use({self.TOKEN: [(400, {"error": "expired_token"})]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "lost")
+
+    def test_incomplete_read_is_transient(self):
+        import http.client as hc
+        self.start()
+        self.use({self.TOKEN: [hc.IncompleteRead(b""), (400, {"error": "expired_token"})]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "lost")
+
     def test_store_failure_after_issue_never_prints_key(self):
         self.start()
         FakeStore.fail_put_after = FakeStore.puts + 1  # preflight passes, the real put fails
@@ -464,7 +480,8 @@ class Call(Base):
         self.paired()
         op = self.use({})
         for p in ("/api/other", "https://evil.example/api/agent/v1/grant", "/api/agent/../user", "//evil/api/agent/", "/api/agent/v1/x y",
-                  "/api/agent/%2e%2e/user", "/api/agent/%2E%2E/user", "/api/agent/v1%2fx"):
+                  "/api/agent/%2e%2e/user", "/api/agent/%2E%2E/user", "/api/agent/v1%2fx", "/api/agent/%252e%252e/user",
+                  "/api/agent/v1/grant\n", "/api/agent/./grant", "/api/agent/v1/grant?a=%252e", "/api/agent/v1/x\\y"):
             code, out = self.run_cli("call", "GET", p)
             self.assertEqual(out["error"], "invalid_path", p)
         self.assertEqual(op.requests, [])
@@ -557,16 +574,19 @@ class Import(Base):
     def test_bad_files(self):
         op = self.use({})
         cases = [
-            self.keyfile(realm="evil.example"),
-            self.keyfile(type="something-else"),
-            self.keyfile(key="darwinAI_api_" + "x" * 43),
-            self.keyfile(key="darwinAI_agent_short"),
-            self.keyfile(agent_id="../../etc"),
-            self.keyfile(version=2),
+            dict(realm="evil.example"),
+            dict(type="something-else"),
+            dict(key="darwinAI_api_" + "x" * 43),
+            dict(key="darwinAI_agent_short"),
+            dict(agent_id="../../etc"),
+            dict(version=2),
+            dict(key=None),
         ]
-        for path in cases:
+        for over in cases:
+            path = self.keyfile(**over)  # written and imported one at a time
             code, out = self.run_cli("import", path)
-            self.assertEqual(out["error"], "key_file_invalid", path)
+            self.assertEqual(out["error"], "key_file_invalid", over)
+            self.assertTrue(os.path.exists(path))
         notjson = os.path.join(self.tmp, "x.json")
         with open(notjson, "w") as f:
             f.write("not json " + KEY)
@@ -578,6 +598,46 @@ class Import(Base):
         code, out = self.run_cli("import", big)
         self.assertEqual(out["error"], "key_file_invalid")
         self.assertEqual(op.requests, [])
+
+    def test_edited_realm_never_sends_the_key(self):
+        """A prod key file edited to say beta is refused unless --realm beta was asked for."""
+        path = self.keyfile(realm="beta.darwin.finance")
+        op = self.use({})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["error"], "realm_mismatch")
+        self.assertEqual(op.requests, [])
+
+    def test_file_swapped_before_delete_is_left_alone(self):
+        path = self.keyfile()
+        other = os.path.join(self.tmp, "other.json")
+
+        def swap(*a, **k):
+            os.rename(path, other)
+            with open(path, "w") as f:
+                f.write("someone else's file")
+            return (200, {"grant": {"id": GRANT}})
+
+        class SwapOpener(FakeOpener):
+            def open(inner, req, timeout=None):
+                if req.full_url.endswith("/grant"):
+                    swap()
+                return FakeOpener.open(inner, req, timeout)
+
+        D._OPENER = SwapOpener({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported")
+        self.assertFalse(out["key_file_deleted"])
+        with open(path) as f:
+            self.assertEqual(f.read(), "someone else's file")
+
+    def test_hostile_server_metadata_never_persisted(self):
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})],
+                  self.HELLO_URL: [(200, {"welcome": "hi " + KEY, "agent": KEY})]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported")
+        with open(os.path.join(self.state_dir, "keys.json")) as f:
+            self.assertNotIn(KEY, f.read())
 
     @unittest.skipIf(os.name == "nt", "symlinks")
     def test_symlinked_key_file_refused(self):
@@ -600,8 +660,10 @@ class Import(Base):
         op = self.use({("GET", BETA + "/api/agent/v1/grant"): [(200, {"grant": {"id": GRANT}})],
                        ("GET", BETA + "/api/agent/v1/hello"): [HELLO]})
         code, out = self.run_cli("import", path)
+        self.assertEqual(out["error"], "realm_mismatch")  # without --realm beta
+        code, out = self.run_cli("import", path, "--realm", "beta")
         self.assertEqual(out["realm"], "beta")
-        self.assertTrue(all(r["url"].startswith(BETA) for r in op.requests))
+        self.assertTrue(op.requests and all(r["url"].startswith(BETA) for r in op.requests))
 
 
 # ── output safety ─────────────────────────────────────────────────────────────
@@ -698,6 +760,8 @@ class RamStore(unittest.TestCase):
 # ── the real macOS Keychain (one probe item; never a real key) ────────────────
 @unittest.skipUnless(sys.platform == "darwin" and os.environ.get("DARWIN_SKIP_KEYCHAIN") != "1", "macOS only")
 class MacKeychainProbe(unittest.TestCase):
+    """Runs on a developer Mac (CI runners have no unlocked login keychain)."""
+
     def test_write_read_delete(self):
         store = D.MacKeychain(service="finance.darwin.agent-skill.test")
         account = "unittest:probe"
@@ -709,6 +773,51 @@ class MacKeychainProbe(unittest.TestCase):
         finally:
             store.delete(account)
         self.assertIsNone(store.get(account))
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class WindowsCredentialProbe(unittest.TestCase):
+    def test_write_overwrite_read_delete(self):
+        store = D.WindowsCredentials(service="finance.darwin.agent-skill.test")
+        account = "unittest:probe"
+        try:
+            store.put(account, "probe_value_1")
+            self.assertEqual(store.get(account), "probe_value_1")
+            store.put(account, "probe_value_2")
+            self.assertEqual(store.get(account), "probe_value_2")
+        finally:
+            store.delete(account)
+        self.assertIsNone(store.get(account))
+
+
+@unittest.skipIf(os.name == "nt", "POSIX permissions")
+class Ancestors(unittest.TestCase):
+    def test_world_writable_non_sticky_ancestor_refused(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            shared = os.path.join(tmp, "shared")
+            os.mkdir(shared)
+            os.chmod(shared, 0o777)
+            with self.assertRaises(D.HelperError) as cm:
+                D.ensure_private_dir(os.path.join(shared, "state"))
+            self.assertEqual(cm.exception.code, "state_dir_unsafe")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_foreign_lock_file_refused(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            d = D.ensure_private_dir(os.path.join(tmp, "s"))
+            lock = os.path.join(d, ".lock")
+            with open(lock, "w"):
+                pass
+            os.chmod(lock, 0o644)
+            with self.assertRaises(D.HelperError) as cm:
+                with D.StateLock(d):
+                    pass
+            self.assertEqual(cm.exception.code, "state_file_unsafe")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

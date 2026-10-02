@@ -14,7 +14,8 @@ to later API calls, so the key never appears in the conversation.
     python3 darwin.py status [--check]
     python3 darwin.py forget (--agent-id ID | --pending | --all)
 
-Every command prints exactly ONE line of JSON on stdout.
+Every command prints exactly ONE line of JSON on stdout (`--help` and
+`--version` are the only exceptions: they print plain text).
 
 Security properties (each one is tested in tests/test_darwin.py):
   * Talks only to https://darwin.finance and https://beta.darwin.finance, on
@@ -31,6 +32,7 @@ Stdlib only. Python 3.8+. Official source: https://github.com/DarwinFinance/agen
 """
 import argparse
 import base64
+import http.client as _httpclient
 import json
 import os
 import re
@@ -61,7 +63,8 @@ KEY_RE = re.compile(r"^(?:darwinAI_agent_|agt_)[A-Za-z0-9_-]{20,200}$")
 DEVICE_CODE_RE = re.compile(r"^darwinAI_pair_[A-Za-z0-9_-]{40,114}$")
 USER_CODE_RE = re.compile(r"^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
-API_PATH_RE = re.compile(r"^/api/agent/[A-Za-z0-9/_.~%:,=&?+-]*$")
+API_PATH_RE = re.compile(r"/api/agent/[A-Za-z0-9/_.~-]*")
+API_QUERY_RE = re.compile(r"[A-Za-z0-9_.~%:,=&+-]*")
 
 PAIR_MAX_LIFETIME_SECS = 25 * 60
 DEFAULT_WAIT_SECS = 480
@@ -230,10 +233,18 @@ def parse_realm(value):
 
 
 def check_api_path(path):
-    low = path.lower() if isinstance(path, str) else ""
-    if (not isinstance(path, str) or not API_PATH_RE.match(path) or ".." in path or "//" in path
-            or "%2e" in low or "%2f" in low or "%5c" in low):
-        raise HelperError("invalid_path", "path must start with /api/agent/ (for example /api/agent/v1/grant)")
+    """`/api/agent/<segments>[?query]`. No percent-encoding in the path at all (so no
+    encoded or double-encoded dot or slash), no dot segments, no controls."""
+    bad = HelperError("invalid_path", "path must start with /api/agent/ (for example /api/agent/v1/grant)")
+    if not isinstance(path, str) or len(path) > 2048:
+        raise bad
+    route, _, query = path.partition("?")
+    if not API_PATH_RE.fullmatch(route) or "//" in route:
+        raise bad
+    if any(seg in (".", "..") for seg in route.split("/")):
+        raise bad
+    if query and (not API_QUERY_RE.fullmatch(query) or "%25" in query.lower()):
+        raise bad
     return path
 
 
@@ -263,12 +274,12 @@ def http(realm, method, path, *, body=None, key=None, host_agent=None, accept_st
         status = e.code
         if 300 <= status < 400:
             raise HelperError("redirect_refused", "Darwin answered with a redirect; this helper never follows one.", http_status=status)
-    except (urllib.error.URLError, OSError, ssl.SSLError) as e:
+    except (urllib.error.URLError, OSError, ssl.SSLError, _httpclient.HTTPException) as e:
         raise HelperError("network_error", "Could not reach %s (%s)." % (REALM_HOSTS[realm], type(e).__name__))
     try:
         ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         raw = resp.read(MAX_RESPONSE_BYTES + 1)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, _httpclient.HTTPException) as e:
         raise HelperError("network_error", "The connection to %s dropped (%s)." % (REALM_HOSTS[realm], type(e).__name__))
     finally:
         try:
@@ -305,14 +316,46 @@ def _uid():
     return os.getuid() if hasattr(os, "getuid") else None
 
 
+_REPARSE = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT (Windows symlinks and junctions)
+
+
+def _is_link(st):
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _REPARSE)
+
+
+def check_ancestors(path):
+    """POSIX: every existing ancestor must be owned by us or root, and not writable by
+    others unless sticky (like /tmp). Otherwise someone else could swap the directory."""
+    uid = _uid()
+    if uid is None:
+        return
+    cur = os.path.dirname(os.path.abspath(path))
+    seen = set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        try:
+            st = os.stat(cur)
+        except OSError:
+            break
+        if st.st_uid not in (uid, 0):
+            raise HelperError("state_dir_unsafe", "%s is owned by another user; refusing to keep state under it." % cur)
+        if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
+            raise HelperError("state_dir_unsafe", "%s is writable by other users; refusing to keep state under it." % cur)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+
 def ensure_private_dir(path):
-    """Create (0700) or verify a directory: not a symlink, ours, private."""
+    """Create (0700) or verify a directory: not a symlink/junction, ours, private, safe ancestors."""
+    check_ancestors(path)
     try:
         os.makedirs(path, mode=0o700, exist_ok=True)
     except OSError as e:
         raise HelperError("state_dir_unusable", "Cannot create %s (%s)." % (path, type(e).__name__))
     st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+    if _is_link(st) or not stat.S_ISDIR(st.st_mode):
         raise HelperError("state_dir_unsafe", "%s is a symlink or not a directory; refusing to use it." % path)
     uid = _uid()
     if uid is not None:
@@ -321,6 +364,20 @@ def ensure_private_dir(path):
         if st.st_mode & 0o077:
             os.chmod(path, 0o700)
     return path
+
+
+def _check_target(path):
+    """An existing state file we are about to read or replace: regular, ours, not a link."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    uid = _uid()
+    if _is_link(st):
+        raise HelperError("state_file_unsafe", "%s is a symlink; refusing to use it." % path)
+    if not stat.S_ISREG(st.st_mode) or (uid is not None and st.st_uid != uid):
+        raise HelperError("state_file_unsafe", "%s is not a private file owned by you; refusing to use it." % path)
+    return st
 
 
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -337,8 +394,7 @@ def write_private_json(path, obj):
             f.write(json.dumps(obj).encode("utf-8"))
             f.flush()
             os.fsync(f.fileno())
-        if os.path.islink(path):
-            raise HelperError("state_file_unsafe", "%s is a symlink; refusing to use it." % path)
+        _check_target(path)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -350,6 +406,8 @@ def write_private_json(path, obj):
 
 def read_private_json(path, max_bytes=65536):
     """Read a file only if it is a regular, private file owned by us. Missing → None."""
+    if _check_target(path) is None:
+        return None
     try:
         fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
     except FileNotFoundError:
@@ -394,7 +452,14 @@ class StateLock(object):
         self.fd = None
 
     def __enter__(self):
+        _check_target(self.path)
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_BINARY, 0o600)
+        st = os.fstat(self.fd)
+        uid = _uid()
+        if not stat.S_ISREG(st.st_mode) or (uid is not None and (st.st_uid != uid or st.st_mode & 0o077)):
+            os.close(self.fd)
+            self.fd = None
+            raise HelperError("state_file_unsafe", "%s is not a private lock file owned by you." % self.path)
         try:
             if os.name == "nt":
                 import msvcrt
@@ -674,11 +739,19 @@ class LinuxSecretTool(object):
     description = "the Linux Secret Service (secret-tool)"
 
     def __init__(self, service=SERVICE):
-        import shutil
-
-        self.exe = shutil.which("secret-tool")
+        # Only a system-installed binary: a secret-tool found through a writable PATH
+        # entry would receive the key.
+        self.exe = None
+        for cand in ("/usr/bin/secret-tool", "/bin/secret-tool", "/usr/local/bin/secret-tool"):
+            try:
+                st = os.stat(cand)
+            except OSError:
+                continue
+            if st.st_uid == 0 and not st.st_mode & 0o022:
+                self.exe = cand
+                break
         if not self.exe:
-            raise StoreError("secret-tool not installed")
+            raise StoreError("no root-owned secret-tool in /usr/bin, /bin or /usr/local/bin")
         self.service = service
 
     def _run(self, args, stdin=None):
@@ -823,7 +896,20 @@ def backend_by_name(name):
 
 
 # ── Key index ─────────────────────────────────────────────────────────────────
+def safe_text(value, cap=80):
+    """Server- or file-supplied text that may be printed or persisted: no controls,
+    capped, and never anything secret-shaped (a hostile server could echo the key)."""
+    if not isinstance(value, str):
+        return None
+    v = re.sub(r"[\x00-\x1f\x7f]", " ", value)[:cap]
+    for sec in _KNOWN_SECRETS:
+        if sec in value:
+            return "[REDACTED]"
+    return redact(v)
+
+
 def record_key(state, realm, agent_id, agent_name, backend, host_agent, source):
+    agent_name = safe_text(agent_name, 80)
     entries = [e for e in state.index() if not (e["realm"] == realm and e["agent_id"] == agent_id)]
     entries.append({
         "realm": realm, "agent_id": agent_id, "agent": agent_name, "stored_in": backend.name,
@@ -884,6 +970,8 @@ def say_hello(realm, key, host_agent):
     if status != 200 or not isinstance(body, dict):
         return None, None, "hello_http_%d" % status
     welcome = body.get("welcome") if isinstance(body.get("welcome"), str) else None
+    if welcome is not None:
+        welcome = "[REDACTED]" if any(sec in welcome for sec in _KNOWN_SECRETS) else redact(welcome[:4000])
     agent = body.get("agent") if isinstance(body.get("agent"), str) else None
     return welcome, agent, None
 
@@ -974,12 +1062,20 @@ def cmd_pair_wait(args):
         except Exception as e:
             raise HelperError("secret_store_unavailable", "The secret store failed its check (%s); not collecting the key now. Fix it and re-run `pair wait`." % redact(str(e))[:120])
         host = host_agent_name(p.get("client_name"))
+        if p.get("in_flight"):
+            # A previous `pair wait` died mid-poll: its answer (maybe the key) was never handled.
+            p["transport_errors"] = int(p.get("transport_errors", 0)) + 1
+            p["in_flight"] = False
+            state.save_pending(p)
         deadline = time.time() + max_secs
         while True:
             now = time.time()
             if now >= p.get("hard_expires_at", 0):
                 state.clear_pending()
-                emit({"status": "expired", "detail": "The pairing code expired. Start again with `pair start` if your user still wants to connect."})
+                out = {"status": "expired", "detail": "The pairing code expired. Start again with `pair start` if your user still wants to connect."}
+                if p.get("transport_errors"):
+                    out = {"status": "lost", "detail": _lost_hint(p)}
+                emit(out)
                 return 0
             wait_for = max(0.0, p.get("next_poll_at", now) - now)
             if now + wait_for >= deadline:
@@ -990,22 +1086,26 @@ def cmd_pair_wait(args):
                 return 0
             if wait_for:
                 time.sleep(wait_for)
+            p["in_flight"] = True
+            state.save_pending(p)
             try:
                 status, resp = http(realm, "POST", TOKEN_PATH, body={"device_code": p["device_code"]}, host_agent=host)
             except HelperError as e:
-                if e.code in ("network_error", "unexpected_content_type", "invalid_json"):
+                p["in_flight"] = False
+                if e.code in ("network_error", "unexpected_content_type", "invalid_json", "response_too_large"):
                     p["transport_errors"] = int(p.get("transport_errors", 0)) + 1
                     p["next_poll_at"] = time.time() + min(60, p["interval"] * 2)
                     state.save_pending(p)
                     continue
                 raise
+            if status == 200:
+                return _finish_pairing(state, p, realm, backend, host, resp if isinstance(resp, dict) else {})
+            p["in_flight"] = False
             if not isinstance(resp, dict):
                 resp = {}
             p["polls"] = int(p.get("polls", 0)) + 1
             err = resp.get("error")
             p["last_answer"] = err if isinstance(err, str) and re.match(r"^[a-z_]{1,40}$", err) else ("ok" if status == 200 else "http_%d" % status)
-            if status == 200:
-                return _finish_pairing(state, p, realm, backend, host, resp)
             if err == "authorization_pending":
                 p["next_poll_at"] = time.time() + p["interval"]
             elif err == "slow_down":
@@ -1021,7 +1121,7 @@ def cmd_pair_wait(args):
                 return 0
             elif err == "access_denied":
                 state.clear_pending()
-                emit({"status": "denied", "detail": redact(str(resp.get("error_description") or "Your user declined. Do not retry on your own; ask your user what they want to do."))[:400]})
+                emit({"status": "denied", "detail": safe_text(resp.get("error_description"), 400) or "Your user declined. Do not retry on your own; ask your user what they want to do."})
                 return 0
             elif status == 429 or err == "rate_limited":
                 p["next_poll_at"] = time.time() + 60
@@ -1035,26 +1135,31 @@ def cmd_pair_wait(args):
 
 
 def _finish_pairing(state, p, realm, backend, host, resp):
-    token = resp.get("access_token") if isinstance(resp, dict) else None
-    key_name = resp.get("key_name") if isinstance(resp.get("key_name"), str) else "Paired: %s" % p.get("client_name", "agent")
-    state.clear_pending()  # the device code is spent either way
+    """The key is in memory only. The pending file (marked in_flight) is kept until the key
+    is durably stored, so a crash here is reported as `lost` by the next `pair wait`."""
+    token = resp.get("access_token")
     if isinstance(token, str):
         remember_secret(token)
+    key_name = safe_text(resp.get("key_name"), 80) or "Paired: %s" % p.get("client_name", "agent")
     agent = resp.get("agent") if isinstance(resp.get("agent"), dict) else {}
     agent_id = agent_id_from_url(agent.get("agentPageUrl"), realm)
     manage = agent.get("manageUrl") if isinstance(agent.get("manageUrl"), str) else None
     if not isinstance(token, str) or not KEY_RE.match(token) or not agent_id:
+        state.clear_pending()
         raise HelperError("bad_response", "Darwin's key answer was malformed; nothing was stored. Ask your user to revoke the key named "
                           "\"%s\" on the agent's Manage tab, then pair again." % key_name, manage_url=manage)
     try:
         store_key(backend, realm, agent_id, token)
     except Exception:
+        state.clear_pending()
         raise HelperError("store_failed_after_issue",
                           "The key was issued but could not be stored, and it is NOT shown here. Ask your user to revoke the key named "
                           "\"%s\" on the agent's Manage tab, then pair again." % key_name, manage_url=manage)
-    agent_name = agent.get("name") if isinstance(agent.get("name"), str) else None
+    agent_name = safe_text(agent.get("name"), 80)
     record_key(state, realm, agent_id, agent_name, backend, host, "pairing")
+    state.clear_pending()  # only now: the key is stored and indexed
     welcome, hello_agent, hello_err = say_hello(realm, token, host)
+    hello_agent = safe_text(hello_agent, 80)
     out = {"status": "paired", "agent": agent_name or hello_agent, "agent_id": agent_id, "realm": realm, "mode": p.get("mode", "new"),
            "stored_in": backend.description, "key_name": key_name, "welcome": welcome,
            "next": "Show `welcome` to your user verbatim first. Then run `call GET /api/agent/v1/grant` and read %s/agents/docs/llms.txt before trading." % realm_origin(realm)}
@@ -1069,7 +1174,7 @@ def _read_key_file(path):
         st = os.lstat(path)
     except OSError:
         raise HelperError("key_file_unreadable", "Cannot find that key file.")
-    if stat.S_ISLNK(st.st_mode):
+    if _is_link(st):
         raise HelperError("key_file_unsafe", "The key file is a symlink; refusing to read it.")
     if not stat.S_ISREG(st.st_mode):
         raise HelperError("key_file_unsafe", "The key file is not a regular file.")
@@ -1106,15 +1211,19 @@ def _read_key_file(path):
         raise HelperError("key_file_invalid", "The key file has no valid agent_id.")
     if not isinstance(key, str) or not KEY_RE.match(key):
         raise HelperError("key_file_invalid", "The key file has no valid Darwin agent key.")
-    return HOST_TO_REALM[realm_host], agent_id, key
+    return HOST_TO_REALM[realm_host], agent_id, key, (st.st_dev, st.st_ino)
 
 
 def cmd_import(args):
     path = os.path.expanduser(args.file)
-    realm, agent_id, key = _read_key_file(path)
-    wanted = parse_realm(args.realm)
-    if wanted and wanted != realm:
-        raise HelperError("realm_mismatch", "The key file is for %s, not %s; a key is only ever sent to its own realm." % (REALM_HOSTS[realm], REALM_HOSTS[wanted]))
+    realm, agent_id, key, identity = _read_key_file(path)
+    # 🔴 The file's `realm` is unsigned. It must AGREE with the realm the agent was told
+    # to use (prod unless `--realm beta` was passed explicitly), so an edited file can
+    # never on its own make the helper send a key somewhere other than intended.
+    wanted = parse_realm(args.realm) or "prod"
+    if wanted != realm:
+        raise HelperError("realm_mismatch", "The key file says %s, but this import is for %s. Nothing was sent. "
+                          "If the key really is for %s, re-run with --realm %s." % (REALM_HOSTS[realm], REALM_HOSTS[wanted], REALM_HOSTS[realm], realm))
     host = host_agent_name(args.client_name)
     state = State()
     with state.lock():
@@ -1136,9 +1245,14 @@ def cmd_import(args):
     deleted = False
     delete_error = None
     if not args.keep_file:
+        # Delete only the file that was read: if the path now names something else, leave it.
         try:
-            os.unlink(path)
-            deleted = True
+            st = os.lstat(path)
+            if _is_link(st) or (st.st_dev, st.st_ino) != identity:
+                delete_error = "file_changed"
+            else:
+                os.unlink(path)
+                deleted = True
         except OSError as e:
             delete_error = type(e).__name__
     out = {"status": "imported", "agent": agent_name, "agent_id": agent_id, "realm": realm, "stored_in": backend.description,
@@ -1295,7 +1409,19 @@ def build_parser():
     return p
 
 
+def harden_process():
+    """Linux: mark the process non-dumpable (no core file, no same-user ptrace attach)."""
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+
+            ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 4
+        except Exception:
+            pass
+
+
 def main(argv=None):
+    harden_process()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

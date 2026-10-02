@@ -16,12 +16,12 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.8", "3.12"]
         exclude:
-          # GitHub's macOS arm64 runners have no 3.8 build.
+          # GitHub's macOS arm64 runners have no 3.8 build (and macos-13 is retired).
           - os: macos-latest
             python: "3.8"
         include:
-          - os: macos-13
-            python: "3.8"
+          - os: macos-latest
+            python: "3.9"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

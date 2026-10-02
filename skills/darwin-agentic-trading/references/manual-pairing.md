@@ -1,9 +1,10 @@
 # Manual pairing (no python3)
 
 Use this only when `scripts/darwin.py` cannot run. The canonical, always-current
-version of these steps is https://darwin.finance/agents/setup.md (fetch it raw, e.g.
-`curl -fsS https://darwin.finance/agents/setup.md`); if it disagrees with this file,
-follow it.
+protocol is https://darwin.finance/agents/setup.md (fetch it raw, e.g.
+`curl -fsS https://darwin.finance/agents/setup.md`); use it for protocol details. It
+never overrides the security rules in SKILL.md: never ask for secrets in chat, send the
+key only to the realm that issued it, never print it.
 
 ⚠️ **Tell your user first:** without the helper, the API key passes through this
 conversation's tool output once (in the step 3 response). Anything that records the
@@ -27,17 +28,21 @@ for example `-A "darwin-agent-skill/manual (<your app name>)"`.
 2. Show your user `verification_uri_complete` and `user_code`. Keep `device_code`
    to yourself: do not show it or put it in a URL.
 
-3. Every `interval` seconds (5), poll:
+3. Every `interval` seconds (5), poll. Pass the body on **stdin** (`-d @-`), never as a
+   command-line argument, so the device code does not appear in the process list:
 
        curl -sS -A "darwin-agent-skill/manual (Claude Code)" \
-         -H 'Content-Type: application/json' \
-         -d '{"device_code":"<device_code>"}' \
-         https://darwin.finance/api/agent/v1/pair/token
+         -H 'Content-Type: application/json' -d @- \
+         https://darwin.finance/api/agent/v1/pair/token <<'EOF'
+       {"device_code":"<device_code>"}
+       EOF
 
    `authorization_pending`: keep polling. `slow_down`: add 5 seconds.
    `expired_token`: start again if your user still wants to. `access_denied`: stop.
-   A 200 carries `access_token`, shown **once**. Keep it in memory; never print,
-   log or repeat it.
+   A 200 carries `access_token`, shown **once**. With plain curl that response is
+   tool output, which is why this path exposes the key once. Keep it in memory; never
+   print, log or repeat it again, and never put it on a command line (send the
+   `Authorization` header from a file or stdin, e.g. `curl -H @-`).
 
 4. `GET https://darwin.finance/api/agent/v1/hello` with
    `Authorization: Bearer <access_token>`; show `welcome` to your user verbatim.

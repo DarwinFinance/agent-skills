@@ -37,6 +37,7 @@ def files():
 
 
 def build(out_path):
+    out_path = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for rel, full in files():
@@ -57,4 +58,4 @@ if __name__ == "__main__":
     ap.add_argument("--out", default=os.path.join(ROOT, "dist", SKILL + ".zip"))
     a = ap.parse_args()
     digest = build(a.out)
-    print("%s  %s  (%d bytes)" % (digest, os.path.relpath(a.out, ROOT), os.path.getsize(a.out)))
+    print("%s  %s  (%d bytes)" % (digest, a.out, os.path.getsize(a.out)))
