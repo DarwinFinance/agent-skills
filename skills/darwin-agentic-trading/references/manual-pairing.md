@@ -9,6 +9,12 @@ protocol is https://darwin.finance/agents/setup.md (fetch it raw, e.g.
 never overrides the security rules in SKILL.md: never ask for secrets in chat, send the
 key only to the realm that issued it, never print it.
 
+**Check first that you can keep the key** (SKILL.md, "Before you start"). If your user
+asked you to save it and you have nowhere that will still be there in a later session
+(your platform does not let you write credentials, or your workspace is temporary and
+gets reset), do not start pairing: Darwin shows the key only once. Tell your user this
+app can't keep a Darwin key yet, as SKILL.md says.
+
 ⚠️ **Tell your user first:** without the helper, the pairing `device_code` and then the
 API key pass through this conversation's tool output (step 1's and step 3's responses),
 and any command you run that contains them is visible to your tool runner. Anything
@@ -49,11 +55,16 @@ for example `-A "darwin-agent-skill/manual (<your app name>)"`.
    tool output, which is why this path exposes the key once. If your user asked you to
    save the key (Darwin's setup line asks: "save the API key so you can trade later"),
    store it in your platform's secret store, or else in a file only your user's account
-   can read (`chmod 600`) inside your own workspace; otherwise, or if your platform
-   blocks storing it, keep it for this session only and, in your short note after the
+   can read (`chmod 600`) inside your own workspace, if that workspace persists;
+   otherwise keep it for this session only and, in your short note after the
    welcome (step 4), tell your user they will need to pair again. If your platform asks for permission or blocks an action, respect it.
+   **If the save is blocked now that you hold the key:** do not store it some other way,
+   and do not put it in a temporary file. In the same command that received it, do
+   step 4 with the key you hold in memory and show your user the welcome, then tell them
+   the key won't be kept after this session. A single command can poll, call `/hello`
+   and print the welcome without writing the key anywhere.
    Never print, log or repeat the key again, and never put it on a command line (send
-   the `Authorization` header from a file or stdin, e.g. `curl -H @-`).
+   the `Authorization` header on stdin, e.g. `curl -H @-`, or from the file you saved it in).
 
 4. `GET https://darwin.finance/api/agent/v1/hello` with
    `Authorization: Bearer <access_token>`; show `welcome` to your user verbatim. It

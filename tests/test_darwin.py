@@ -1098,6 +1098,44 @@ class SkillDocs(unittest.TestCase):
         self.assertIn("in your short note after the welcome (step 4), tell your user they will need to pair again", manual)
         self.assertIn("respect it", text)
 
+    def test_storage_is_checked_before_pairing(self):
+        # A Claude Cowork chat paired, then could not keep the key (its platform blocks
+        # writing credentials; its workspace is a temporary sandbox). Darwin shows a key
+        # only once, so the check comes before `pair start`.
+        text = " ".join(self._docs()["SKILL.md"].split())
+        before = text[text.index("## Before you start"):text.index("## Hard rules")]
+        self.assertTrue(before.startswith("## Before you start - **First, check that you can keep the key.**"))
+        self.assertIn("Before `pair start`, decide where it will live", before)
+        self.assertIn("do not start pairing", before)
+        self.assertIn("this app can't keep a Darwin key yet", before)
+        self.assertIn("Claude Code, Codex, Hermes, or any agent with this skill: `npx skills add DarwinFinance/agent-skills`", before)
+        self.assertIn("as a downloaded key file (never pasted into the chat)", before)
+        self.assertIn("A Darwin connector for chat apps is coming.", before)
+        self.assertIn("That works only if the workspace persists and your platform lets you write the file", before)
+        manual = " ".join(self._docs()[os.path.join("references", "manual-pairing.md")].split())
+        self.assertIn("**Check first that you can keep the key**", manual)
+        self.assertLess(manual.index("**Check first that you can keep the key**"), manual.index("1. Ask for a pairing code"))
+
+    def test_a_blocked_save_finishes_in_memory_never_elsewhere(self):
+        text = " ".join(self._docs()["SKILL.md"].split())
+        self.assertIn("do not store it some other way or in a temporary file", text)
+        # The helper never exposes the key, so its blocked-store answer is a revoke, not a recovery.
+        self.assertIn("if it reports `store_failed_after_issue`, tell your user to revoke the key it names", text)
+        self.assertIn('"store_failed_after_issue"', open(os.path.join(self.SKILL_DIR, "scripts", "darwin.py"), encoding="utf-8").read())
+        # A session-only key file is never imported (import stores it).
+        self.assertIn("For a session-only key file, do not run `darwin.py import` (it stores the key)", text)
+        manual = " ".join(self._docs()[os.path.join("references", "manual-pairing.md")].split())
+        self.assertIn("**If the save is blocked now that you hold the key:** do not store it some other way, and do not put it in a temporary file.", manual)
+        self.assertIn("A single command can poll, call `/hello` and print the welcome without writing the key anywhere.", manual)
+
+    def test_no_doc_suggests_getting_around_a_platform_control(self):
+        import re
+        evasion = re.compile(r"\b(?:bypass|circumvent|evade|work ?around|get around|sneak|disable (?:the|your|any))\b", re.I)
+        for name, text in self._docs().items():
+            for sentence in re.split(r"(?<=[.!?])\s+", " ".join(text.split())):
+                if evasion.search(sentence):
+                    self.assertRegex(sentence, r"(?i)\b(?:never|do not|don't|refuse)\b", "%s: %s" % (name, sentence))
+
     def test_skill_md_memory_only_rule_matches_the_helper(self):
         # SKILL.md keys the "use manual pairing instead" rule on key_storage reading "memory only".
         self.assertTrue(D.RamFileStore.description.startswith("memory only"))

@@ -33,8 +33,22 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
 
 ## Before you start
 
-- **Your user asked for this.** Asking Darwin for a pairing code (step 1) changes
-  nothing in their account, moves no money and needs no secret, so you do not need to
+- **First, check that you can keep the key.** Darwin shows a key only once. Before
+  `pair start`, decide where it will live: the OS secret store the helper uses, or a
+  file you are allowed to write that will still be there in a later session. If you
+  can't keep it (your platform does not let you write credentials, or your workspace
+  is temporary and gets reset), do not start pairing. Instead tell your user, in one
+  or two sentences, that this app can't keep a Darwin key yet, and suggest running
+  setup from an AI agent on their own computer (Claude Code, Codex, Hermes, or any
+  agent with this skill: `npx skills add DarwinFinance/agent-skills`), or creating an
+  API key on their agent's **Manage** tab and giving it to you for this session only,
+  as a downloaded key file (never pasted into the chat). For a session-only key file,
+  do not run `darwin.py import` (it stores the key): have each command that calls
+  Darwin read the file's `key` field and send it as the `Authorization` header on
+  stdin, never on a command line. A Darwin connector for chat apps is coming. (If your user said not to save the key, holding it for this session
+  is what they asked for.)
+- **Your user asked for this.** Once you know you can keep the key, asking Darwin for
+  a pairing code (step 1) changes nothing in their account, moves no money and needs no secret, so you do not need to
   ask before doing it.
 - **Your user approves in their own browser**, with their passkey and, if they turned
   it on, their second factor (2FA). Nothing is granted until they do.
@@ -51,7 +65,8 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
   key, do not show the link yet: run `darwin.py forget --pending`, tell your user the
   helper could not keep the key past a reboot here, and pair with
   [references/manual-pairing.md](references/manual-pairing.md) instead, which saves it
-  in an owner-only file in your workspace.
+  in an owner-only file in your workspace. That works only if the workspace persists
+  and your platform lets you write the file; if not, follow the first point instead.
 - **Save it only on your user's say-so.** If your user asked you to save the key
   (Darwin's setup line ends "save the API key so you can trade later"), go ahead; you
   do not need to ask how to store it. If they did not ask, ask once, before
@@ -62,7 +77,13 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
   after the welcome.
 - **Respect your platform.** If your platform asks permission to run a command or
   reach the network, or blocks an action, respect it. Never work around a sandbox,
-  permission prompt or safety control; tell your user what is blocked instead.
+  permission prompt or safety control; tell your user what is blocked instead. With
+  manual pairing, if you already hold a key and the save is blocked, do not store it
+  some other way or in a temporary file: finish setup with it in memory as
+  [references/manual-pairing.md](references/manual-pairing.md) step 3 says, and tell
+  your user the key won't be kept after this session. The helper never shows you the
+  key: if it reports `store_failed_after_issue`, tell your user to revoke the key it
+  names on the agent's **Manage** tab.
 
 ## Hard rules
 
