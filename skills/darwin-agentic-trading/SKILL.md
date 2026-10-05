@@ -155,6 +155,9 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
 4. Make every later API call with `darwin.py call <METHOD> <PATH> ['<json body>']`.
    It adds the key. It never retries a non-GET on its own: follow llms.txt's
    idempotency rules before retrying an order.
+5. Before a US stock or ETF trade, run `darwin.py call GET /api/agent/v1/market-status/us-equities`
+   (no key needed): tokenized stocks trade 24/7, but liquidity is much lower outside the
+   US regular session, and agent stock orders are accepted 9:30am–3:55pm New York time.
 
 ## Reconnect an existing agent
 
