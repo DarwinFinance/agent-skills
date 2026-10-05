@@ -37,6 +37,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import ssl
 import stat
 import subprocess
@@ -1089,6 +1090,29 @@ def with_address(out, welcome, address):
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
+CLI_HINT = ("The Darwin CLI is installed; you can use `darwin` instead of this helper. "
+            "`darwin login --from-skill` moves this key into it.")
+
+
+def cli_hint():
+    """C.70: a one-line pointer to the Darwin CLI when a `darwin` executable is on PATH.
+
+    Never runs it, and never points at a copy inside the current directory tree (a workspace can put
+    its own `darwin` first on PATH). The helper keeps working exactly as before either way.
+    """
+    try:
+        found = shutil.which("darwin")
+        if not found:
+            return None
+        real = os.path.realpath(found)
+        here = os.path.realpath(os.getcwd())
+        if real == here or real.startswith(here + os.sep):
+            return None
+        return CLI_HINT
+    except Exception:
+        return None
+
+
 def cmd_pair_start(args):
     client = validate_client_name(args.client_name)
     realm = parse_realm(args.realm) or "prod"
@@ -1147,6 +1171,9 @@ def cmd_pair_start(args):
         "key_storage": backend.description,
         "next": "Show the user the url and user_code now. Then run `pair wait` (re-run it if it returns still_pending; approval can take up to 25 minutes).",
     }
+    hint = cli_hint()
+    if hint:
+        out["cli"] = hint
     if replaced:
         out["replaced_previous_pairing"] = True
     emit(out)
@@ -1508,6 +1535,9 @@ def cmd_status(args):
                 item["check"] = he.code
         keys.append(item)
     out = {"status": "ok", "version": __version__, "keys": keys, "pending": None}
+    hint = cli_hint()
+    if hint:
+        out["cli"] = hint
     if p:
         out["pending"] = {"realm": p.get("realm"), "mode": p.get("mode"), "user_code": p.get("user_code"), "url": p.get("url"),
                           "expires_at": int(p.get("hard_expires_at", 0))}

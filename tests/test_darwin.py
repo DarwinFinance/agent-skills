@@ -572,6 +572,20 @@ class Call(Base):
         self.assertEqual(out["status"], 401)
         self.assertIn("reconnect", out["hint"])
 
+    def test_cli_hint_only_when_installed_outside_the_workspace(self):
+        with mock.patch.object(D.shutil, "which", return_value=None):
+            code, out = self.run_cli("status")
+            self.assertNotIn("cli", out)
+        outside = os.path.join(tempfile.gettempdir(), "elsewhere-bin", "darwin")
+        with mock.patch.object(D.shutil, "which", return_value=outside), mock.patch.object(D.os, "getcwd", return_value=self.tmp):
+            code, out = self.run_cli("status")
+            self.assertEqual(out["cli"], D.CLI_HINT)
+            self.assertIn("darwin login --from-skill", out["cli"])
+        planted = os.path.join(self.tmp, "node_modules", ".bin", "darwin")
+        with mock.patch.object(D.shutil, "which", return_value=planted), mock.patch.object(D.os, "getcwd", return_value=self.tmp):
+            code, out = self.run_cli("status")
+            self.assertNotIn("cli", out)
+
     def test_status_and_forget(self):
         self.paired()
         self.use({("GET", PROD + "/api/agent/v1/grant"): [(200, {"ok": True})]})

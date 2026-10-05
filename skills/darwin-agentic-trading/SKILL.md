@@ -196,6 +196,14 @@ The helper checks the key with Darwin, stores it, and deletes the file (pass
 - Beta testers add `--realm beta` to `pair start` / `pair reconnect`; beta keys only
   work on beta.darwin.finance.
 
+## The Darwin CLI
+
+If `status` or `pair start` returns a `cli` line, the Darwin CLI is installed on this
+computer. You may use `darwin` instead of this helper (`darwin help` lists every command);
+`darwin login --from-skill` moves a key this helper saved into the CLI's own secret-store
+entry, after checking it with Darwin. The helper's copy stays until your user asks for
+`--delete-skill-copy`. Without a `cli` line, keep using this helper.
+
 ## No python3?
 
 Read [references/manual-pairing.md](references/manual-pairing.md), or fetch
