@@ -67,7 +67,11 @@ for example `-A "darwin-agent-skill/manual (<your app name>)"`.
    the `Authorization` header on stdin, e.g. `curl -H @-`, or from the file you saved it in).
 
 4. `GET https://darwin.finance/api/agent/v1/hello` with
-   `Authorization: Bearer <access_token>`; show `welcome` to your user verbatim. It
+   `Authorization: Bearer <access_token>`; show `welcome` to your user verbatim. If the
+   token answer says `"all_agents": true` (the key starts `darwinAI_agents_`), your user
+   let it trade all their active agents: send `X-Darwin-Agent: <agent.id>` on this call
+   and on every account call after it (`GET /api/agent/v1/agents` lists the agents you
+   may name and needs no header; market data needs none either). It
    starts with the agent's Solana address alone in a code block: keep it in that code
    block (never inline) so your user's chat app shows a copy button next to it.
 
