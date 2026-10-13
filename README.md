@@ -26,13 +26,26 @@ something like *"set up a Darwin agent"* or *"agentic trading on Darwin"*:
 
 1. The agent asks Darwin for a pairing code and shows you a link and a code.
 2. You open the link, sign in to Darwin and approve, in your own browser.
-3. Darwin gives the agent an API key for **one Darwin agent account**, which it can trade
-   inside the limits you set. The helper keeps the key in your operating system's secret
-   store, so it never appears in the chat.
+3. Darwin gives the agent an API key for **one Darwin agent account** (or, if you choose
+   so when you approve, all your active agents), which it can trade inside each agent's
+   limits. Every key also reads all of Darwin's market data. The helper keeps the key in
+   your operating system's secret store, so it never appears in the chat.
 
-**No withdrawals:** the agent can never send funds out of its Darwin account; moving perps
-margin back to the agent's own wallet is allowed. Funding and withdrawals stay with you, in
-the Darwin app.
+**No withdrawals:** the agent can never send funds out of its Darwin account, and no Darwin
+credential can move funds between your accounts; moving perps margin between the agent's
+own wallet and its own perps account is allowed. Funding and withdrawals stay with you, in
+the Darwin app. An agent's key cannot create Darwin credentials: new keys come only from
+you, on Darwin.
+
+**Using a chat app** (Claude.ai, ChatGPT, Claude Cowork) that can't keep a key? You don't
+need this skill to trade: connect the chat app on Darwin's MCP page
+([darwin.finance/mcp](https://darwin.finance/mcp)) and turn on trading for one of your
+agents when you approve it, with your passkey and 2FA. The app holds no key.
+
+**Prefer a terminal?** The [Darwin CLI](https://darwin.finance/agents/cli) pairs the same
+way and turns every agent API call into a command: `npm i -g @darwin.finance/cli`, then
+`darwin setup` once, then `~/.local/share/darwin/bin/darwin login` (always run it by the
+path `darwin setup` prints; never through `npx`).
 
 ## Install
 
@@ -80,7 +93,7 @@ skills/darwin-agentic-trading/
 | `pair wait` | Polls until you approve (≤ 8 min per call; re-run it; codes live up to 25 min), stores the key, prints Darwin's welcome |
 | `pair reconnect --client-name "Claude Code"` | Same, but gives a **new key to one of your existing agents**, which you pick and confirm in the browser |
 | `import <file>` | Imports a key file you downloaded from the agent's **Manage** tab, verifies it with Darwin, then deletes the file |
-| `call GET /api/agent/v1/grant` | Calls the Darwin agent API with the stored key |
+| `call GET /api/agent/v1/grant` | Calls the Darwin agent API with the stored key (`--as-agent <id>` names another agent for an all-agents key) |
 | `status [--check]` / `forget …` | Lists stored agents / deletes the local copy |
 
 ## Security model

@@ -37,6 +37,8 @@ def read_json(path):
 
 KEY = "darwinAI_agent_" + "K" * 43
 KEY2 = "darwinAI_agent_" + "Q" * 43
+ALL_KEY = "darwinAI_agents_" + "A" * 43
+OTHER_AGENT = "agr_other456"
 DEVICE = "darwinAI_pair_" + "d" * 43
 GRANT = "agr_test123"
 PROD = "https://darwin.finance"
@@ -138,11 +140,16 @@ LEAD_IN = "Your Darwin agent's Solana address (send any Solana-based asset to fu
 ADDR_BLOCK = LEAD_IN + "\n\n```\n" + ADDR + "\n```"
 
 
-def token_ok(host=PROD):
-    return (200, {"access_token": KEY, "token_type": "Bearer", "expires_at": None, "expires_in": None,
-                  "agent": {"name": "my-agent", "solanaAddress": ADDR, "agentPageUrl": host + "/agent-account/" + GRANT,
-                            "manageUrl": host + "/agent-account/" + GRANT + "/manage"},
-                  "key_name": "Paired: Claude Code"})
+def token_ok(host=PROD, key=KEY):
+    body = {"access_token": key, "token_type": "Bearer", "expires_at": None, "expires_in": None,
+            "agent": {"name": "my-agent", "solanaAddress": ADDR, "agentPageUrl": host + "/agent-account/" + GRANT,
+                      "manageUrl": host + "/agent-account/" + GRANT + "/manage"},
+            "key_name": "Paired: Claude Code"}
+    if key.startswith("darwinAI_agents_"):
+        body["agent"]["id"] = GRANT
+        body["all_agents"] = True
+        body["permissions"] = "Read: all Darwin market data, plus all agents' accounts · Trade: all active agents"
+    return (200, body)
 
 
 HELLO = (200, {"welcome": "Welcome! You are trading as my-agent.", "ok": True, "agent": "my-agent"})
@@ -173,7 +180,7 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
         # 🔴 Global invariant: no secret ever reached stdout or stderr in any test.
         for out, err in self.outputs:
-            for secret in (KEY, KEY2, DEVICE, "K" * 20, "d" * 20):
+            for secret in (KEY, KEY2, ALL_KEY, DEVICE, "K" * 20, "d" * 20, "A" * 20):
                 self.assertNotIn(secret, out)
                 self.assertNotIn(secret, err)
 
@@ -211,8 +218,8 @@ class PairStart(Base):
         self.assertEqual(out["realm"], "prod")
         req = self.opener.requests[0]
         self.assertEqual(req["body"], {"client_name": "Claude Code"})
-        self.assertTrue(req["headers"]["User-agent"].startswith("darwin-agent-skill/1.0.0 (Claude Code)"))
-        self.assertEqual(req["headers"]["X-darwin-client"], "claude; harness=darwin-agent-skill; version=1.0.0")
+        self.assertTrue(req["headers"]["User-agent"].startswith("darwin-agent-skill/%s (Claude Code)" % D.__version__))
+        self.assertEqual(req["headers"]["X-darwin-client"], "claude; harness=darwin-agent-skill; version=%s" % D.__version__)
         pending = os.path.join(self.state_dir, "pending.json")
         if os.name != "nt":
             self.assertEqual(os.stat(pending).st_mode & 0o777, 0o600)
@@ -303,6 +310,27 @@ class PairWait(Base):
         idx = read_json(os.path.join(self.state_dir, "keys.json"))
         self.assertNotIn(KEY, json.dumps(idx))
         self.assertEqual(idx["keys"][0]["agent_id"], GRANT)
+
+    def test_all_agents_key_is_stored_and_hello_names_its_agent(self):
+        # Your user can choose, while approving, a key that trades ALL their active agents
+        # (darwinAI_agents_…). Refusing its shape would lose a key Darwin shows only once.
+        self.start()
+        op = self.use({self.TOKEN: [token_ok(key=ALL_KEY)], self.HELLO_KEY: [HELLO]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertTrue(out["all_agents"])
+        self.assertIn("--as-agent", out["all_agents_note"])
+        self.assertEqual(FakeStore.data["darwin.finance:" + GRANT], ALL_KEY)
+        hello = [r for r in op.requests if r["url"].endswith("/hello")][0]
+        self.assertEqual(hello["headers"]["X-darwin-agent"], GRANT)
+
+    def test_one_agent_key_sends_no_agent_header(self):
+        self.start()
+        op = self.use({self.TOKEN: [token_ok()], self.HELLO_KEY: [HELLO]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertNotIn("all_agents", out)
+        hello = [r for r in op.requests if r["url"].endswith("/hello")][0]
+        self.assertNotIn("X-darwin-agent", hello["headers"])
 
     def test_paired_output_carries_the_address_and_says_keep_it_in_its_code_block(self):
         self.start()
@@ -526,6 +554,29 @@ class Call(Base):
         self.assertEqual(op.requests[0]["headers"]["Authorization"], "Bearer " + KEY)
         self.assertIn("[REDACTED]", out["body"]["echo"])
 
+    def test_all_agents_key_names_its_home_agent_or_the_one_asked_for(self):
+        self.paired(key=ALL_KEY)
+        op = self.use({("GET", PROD + "/api/agent/v1/grant"): [(200, {"ok": True})]})
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant")
+        self.assertEqual(op.requests[0]["headers"]["X-darwin-agent"], GRANT)
+        self.assertEqual(out["as_agent"], GRANT)
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", OTHER_AGENT)
+        self.assertEqual(op.requests[1]["headers"]["X-darwin-agent"], OTHER_AGENT)
+        self.assertEqual(out["as_agent"], OTHER_AGENT)
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", "bad id\n")
+        self.assertEqual(out["error"], "invalid_agent")
+        self.assertEqual(len(op.requests), 2)
+
+    def test_as_agent_refused_for_a_one_agent_key(self):
+        self.paired()
+        op = self.use({})
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", OTHER_AGENT)
+        self.assertEqual(out["error"], "not_all_agents_key")
+        self.assertEqual(op.requests, [])
+
+    def test_all_agents_key_shape_is_redacted(self):
+        self.assertNotIn("A" * 20, D.redact("leaked " + ALL_KEY))
+
     def test_post_5xx_is_not_retried(self):
         self.paired()
         op = self.use({("POST", PROD + "/api/agent/v1/orders"): [(503, {"error": "temporarily_unavailable"})]})
@@ -573,18 +624,41 @@ class Call(Base):
         self.assertIn("reconnect", out["hint"])
 
     def test_cli_hint_only_when_installed_outside_the_workspace(self):
-        with mock.patch.object(D.shutil, "which", return_value=None):
+        no_launcher = mock.patch.object(D, "cli_launcher_path", return_value=os.path.join(self.tmp, "no-such", "darwin"))
+        with no_launcher, mock.patch.object(D.shutil, "which", return_value=None):
             code, out = self.run_cli("status")
             self.assertNotIn("cli", out)
+        # `darwin` on PATH but never set up: say to run `darwin setup`, then use the path it prints.
         outside = os.path.join(tempfile.gettempdir(), "elsewhere-bin", "darwin")
-        with mock.patch.object(D.shutil, "which", return_value=outside), mock.patch.object(D.os, "getcwd", return_value=self.tmp):
+        with no_launcher, mock.patch.object(D.shutil, "which", return_value=outside), mock.patch.object(D.os, "getcwd", return_value=self.tmp):
             code, out = self.run_cli("status")
-            self.assertEqual(out["cli"], D.CLI_HINT)
-            self.assertIn("darwin login --from-skill", out["cli"])
+            self.assertEqual(out["cli"], D.CLI_SETUP_HINT)
+            self.assertIn("`darwin setup`", out["cli"])
+            self.assertIn("never a plain `darwin` from PATH or npx", out["cli"])
         planted = os.path.join(self.tmp, "node_modules", ".bin", "darwin")
-        with mock.patch.object(D.shutil, "which", return_value=planted), mock.patch.object(D.os, "getcwd", return_value=self.tmp):
+        with no_launcher, mock.patch.object(D.shutil, "which", return_value=planted), mock.patch.object(D.os, "getcwd", return_value=self.tmp):
             code, out = self.run_cli("status")
             self.assertNotIn("cli", out)
+
+    def test_cli_hint_points_at_the_setup_launcher(self):
+        home = tempfile.mkdtemp()
+        try:
+            launcher = os.path.join(home, "darwin", "bin", "darwin")
+            os.makedirs(os.path.dirname(launcher))
+            open(launcher, "w").close()
+            with mock.patch.object(D, "cli_launcher_path", return_value=launcher), \
+                    mock.patch.object(D.shutil, "which", return_value=None), mock.patch.object(D.os, "getcwd", return_value=self.tmp):
+                code, out = self.run_cli("status")
+            self.assertEqual(out["cli"], D.CLI_HINT)
+            self.assertIn(D.CLI_LAUNCHER_DISPLAY + " login --from-skill", out["cli"])
+            self.assertIn("never a plain `darwin` from PATH, never npx", out["cli"])
+            # A launcher inside the workspace is never trusted.
+            with mock.patch.object(D, "cli_launcher_path", return_value=launcher), \
+                    mock.patch.object(D.shutil, "which", return_value=None), mock.patch.object(D.os, "getcwd", return_value=home):
+                code, out = self.run_cli("status")
+            self.assertNotIn("cli", out)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
 
     def test_status_and_forget(self):
         self.paired()
@@ -1124,7 +1198,8 @@ class SkillDocs(unittest.TestCase):
         self.assertIn("this app can't keep a Darwin key yet", before)
         self.assertIn("Claude Code, Codex, Hermes, or any agent with this skill: `npx skills add DarwinFinance/agent-skills`", before)
         self.assertIn("as a downloaded key file (never pasted into the chat)", before)
-        self.assertIn("A Darwin connector for chat apps is coming.", before)
+        self.assertNotIn("connector for chat apps is coming", before)
+        self.assertIn("connect the chat app on Darwin's MCP page (https://darwin.finance/mcp)", before)
         self.assertIn("That works only if the workspace persists and your platform lets you write the file", before)
         manual = " ".join(self._docs()[os.path.join("references", "manual-pairing.md")].split())
         self.assertIn("**Check first that you can keep the key**", manual)

@@ -10,7 +10,7 @@ to later API calls, so the key never appears in the conversation.
     python3 darwin.py pair wait
     python3 darwin.py pair reconnect --client-name "Claude Code"
     python3 darwin.py import ~/Downloads/darwin-agent-key-my-agent.json
-    python3 darwin.py call GET /api/agent/v1/grant
+    python3 darwin.py call GET /api/agent/v1/grant [--as-agent ID]
     python3 darwin.py status [--check]
     python3 darwin.py forget (--agent-id ID | --pending | --all)
 
@@ -47,7 +47,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ── Realms ────────────────────────────────────────────────────────────────────
 REALM_HOSTS = {"prod": "darwin.finance", "beta": "beta.darwin.finance"}
@@ -60,7 +60,11 @@ HELLO_PATH = "/api/agent/v1/hello"
 GRANT_PATH = "/api/agent/v1/grant"
 
 DEVICE_CODE_PREFIX = "darwinAI_pair_"
-KEY_RE = re.compile(r"^(?:darwinAI_agent_|agt_)[A-Za-z0-9_-]{20,200}$")
+# `darwinAI_agents_` is a key your user chose, while approving a pairing, to trade ALL their active
+# agents: every account call then names its agent in the X-Darwin-Agent header.
+ALL_AGENTS_KEY_PREFIX = "darwinAI_agents_"
+AGENT_HEADER = "X-Darwin-Agent"
+KEY_RE = re.compile(r"^(?:darwinAI_agents?_|agt_)[A-Za-z0-9_-]{20,200}$")
 DEVICE_CODE_RE = re.compile(r"^darwinAI_pair_[A-Za-z0-9_-]{40,114}$")
 USER_CODE_RE = re.compile(r"^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -75,7 +79,7 @@ HTTP_TIMEOUT = 30
 
 # Anything shaped like a Darwin credential or device code is scrubbed from
 # every string this program prints, whatever its source.
-_SECRET_SHAPE = re.compile(r"(darwinAI_(?:agent|pair|api|mcp)_|agt_|mbt_|mcpt_)[A-Za-z0-9_-]{8,}")
+_SECRET_SHAPE = re.compile(r"(darwinAI_(?:agents|agent|pair|api|mcp)_|agt_|mbt_|mcpt_)[A-Za-z0-9_-]{8,}")
 _KNOWN_SECRETS = set()
 
 
@@ -249,7 +253,17 @@ def check_api_path(path):
     return path
 
 
-def http(realm, method, path, *, body=None, key=None, host_agent=None, accept_status=None):
+def is_all_agents_key(key):
+    return isinstance(key, str) and key.startswith(ALL_AGENTS_KEY_PREFIX)
+
+
+def target_for(key, agent_id):
+    """The X-Darwin-Agent value a call with this key must carry: the agent id for an all-agents key
+    (Darwin refuses its account calls without one, /hello included), nothing for a one-agent key."""
+    return agent_id if is_all_agents_key(key) else None
+
+
+def http(realm, method, path, *, body=None, key=None, host_agent=None, accept_status=None, agent=None):
     """One request to one realm. Returns (status, parsed_json). Never follows redirects."""
     url = realm_origin(realm) + check_api_path(path)
     headers = {
@@ -264,6 +278,10 @@ def http(realm, method, path, *, body=None, key=None, host_agent=None, accept_st
     if key is not None:
         remember_secret(key)
         headers["Authorization"] = "Bearer " + key
+    if agent is not None:
+        if not isinstance(agent, str) or not AGENT_ID_RE.match(agent):
+            raise HelperError("invalid_agent", "An agent id is letters, digits, '_' or '-' (see GET /api/agent/v1/agents).")
+        headers[AGENT_HEADER] = agent
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         resp = opener().open(req, timeout=HTTP_TIMEOUT)
@@ -1063,11 +1081,11 @@ def address_block(address):
     return "%s\n\n```\n%s\n```" % (ADDRESS_LEAD_IN, address)
 
 
-def say_hello(realm, key, host_agent):
+def say_hello(realm, key, host_agent, agent_id=None):
     """GET /hello: returns (welcome or None, agent name or None, Solana address or None, error or None).
-    Failures are reported, not fatal."""
+    Failures are reported, not fatal. An all-agents key names its agent here too."""
     try:
-        status, body = http(realm, "GET", HELLO_PATH, key=key, host_agent=host_agent)
+        status, body = http(realm, "GET", HELLO_PATH, key=key, host_agent=host_agent, agent=target_for(key, agent_id))
     except HelperError as e:
         return None, None, None, e.code
     if status != 200 or not isinstance(body, dict):
@@ -1090,25 +1108,53 @@ def with_address(out, welcome, address):
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
-CLI_HINT = ("The Darwin CLI is installed; you can use `darwin` instead of this helper. "
-            "`darwin login --from-skill` moves this key into it.")
+ALL_AGENTS_NOTE = ("Your user chose to let this key trade ALL their active agents. `call` names this agent "
+                   "(X-Darwin-Agent) for you; to act on another one, add `--as-agent <id>` "
+                   "(`call GET /api/agent/v1/agents` lists them). Each agent's own limits apply.")
+# The Darwin CLI (@darwin.finance/cli) is run only by the launcher `darwin setup` installs, checked
+# against Darwin's release signature; it uses a saved key only through that path, never through npx,
+# a project's node_modules or a plain `darwin` on PATH.
+if os.name == "nt":
+    CLI_LAUNCHER_DISPLAY = "%LOCALAPPDATA%\\darwin\\bin\\darwin.cmd"
+else:
+    CLI_LAUNCHER_DISPLAY = "~/.local/share/darwin/bin/darwin"
+
+CLI_HINT = ("The Darwin CLI is set up on this computer. You may use it instead of this helper: run it by its launcher, "
+            "`{0}` (the path `darwin setup` printed; never a plain `darwin` from PATH, never npx). `{0} help` lists every "
+            "command, and `{0} login --from-skill` moves this key into it.").format(CLI_LAUNCHER_DISPLAY)
+CLI_SETUP_HINT = ("The Darwin CLI is installed but not set up. To use it, run `darwin setup` once, then run it only by the "
+                  "path that prints (usually `{0}`), never a plain `darwin` from PATH or npx.").format(CLI_LAUNCHER_DISPLAY)
+
+
+def cli_launcher_path():
+    """Where `darwin setup` puts the launcher (the CLI prints the exact path; this is its default)."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        return os.path.join(base, "darwin", "bin", "darwin.cmd") if base else None
+    return os.path.join(os.path.expanduser("~"), ".local", "share", "darwin", "bin", "darwin")
 
 
 def cli_hint():
-    """C.70: a one-line pointer to the Darwin CLI when a `darwin` executable is on PATH.
+    """C.70: a one-line pointer to the Darwin CLI. Points at the launcher `darwin setup` installs when it
+    exists; otherwise, when a `darwin` executable is on PATH, says to run `darwin setup` first.
 
-    Never runs it, and never points at a copy inside the current directory tree (a workspace can put
+    Never runs either, and never trusts a copy inside the current directory tree (a workspace can put
     its own `darwin` first on PATH). The helper keeps working exactly as before either way.
     """
     try:
-        found = shutil.which("darwin")
-        if not found:
-            return None
-        real = os.path.realpath(found)
         here = os.path.realpath(os.getcwd())
-        if real == here or real.startswith(here + os.sep):
-            return None
-        return CLI_HINT
+
+        def outside(path):
+            real = os.path.realpath(path)
+            return not (real == here or real.startswith(here + os.sep))
+
+        launcher = cli_launcher_path()
+        if launcher and os.path.isfile(launcher) and outside(launcher):
+            return CLI_HINT
+        found = shutil.which("darwin")
+        if found and outside(found):
+            return CLI_SETUP_HINT
+        return None
     except Exception:
         return None
 
@@ -1303,7 +1349,7 @@ def _finish_pairing(state, p, realm, backend, host, resp):
     agent_name = safe_text(agent.get("name"), 80)
     record_key(state, realm, agent_id, agent_name, backend, host, "pairing")
     state.clear_pending()  # only now: the key is stored and indexed
-    welcome, hello_agent, hello_address, hello_err = say_hello(realm, token, host)
+    welcome, hello_agent, hello_address, hello_err = say_hello(realm, token, host, agent_id)
     hello_agent = safe_text(hello_agent, 80)
     # The key answer's own address first (it names the agent this key was minted for), else /hello's.
     address = safe_solana_address(agent.get("solanaAddress")) or hello_address
@@ -1312,6 +1358,9 @@ def _finish_pairing(state, p, realm, backend, host, resp):
            "stored_in": backend.description, "key_name": key_name, "welcome": welcome,
            "next": ("%s %s Before your first order, run `call GET /api/agent/v1/grant` and read %s/agents/docs/llms.txt." % (
                show, AFTER_SETUP, realm_origin(realm))).strip()}
+    if is_all_agents_key(token):
+        out["all_agents"] = True
+        out["all_agents_note"] = ALL_AGENTS_NOTE
     with_address(out, welcome, address)
     if hello_err:
         out["hello_error"] = hello_err
@@ -1439,7 +1488,7 @@ def _import(args, kf):
     state = State()
     with state.lock():
         backend = choose_backend()
-        status, body = http(realm, "GET", GRANT_PATH, key=key, host_agent=host)
+        status, body = http(realm, "GET", GRANT_PATH, key=key, host_agent=host, agent=target_for(key, agent_id))
         if status in (401, 403):
             raise HelperError("key_rejected", "Darwin did not accept this key (revoked, stopped, or limits changed). Nothing was stored.", http_status=status)
         if status != 200 or not isinstance(body, dict):
@@ -1451,7 +1500,7 @@ def _import(args, kf):
             store_key(backend, realm, agent_id, key)
         except Exception as e:
             raise HelperError("store_failed", "Could not store the key in %s (%s). Nothing was imported; the key file was kept." % (backend.description, redact(str(e))[:80]))
-        welcome, agent_name, hello_address, hello_err = say_hello(realm, key, host)
+        welcome, agent_name, hello_address, hello_err = say_hello(realm, key, host, agent_id)
         # /grant's own `wallet` (this key's agent) else /hello's.
         address = safe_solana_address(grant.get("wallet")) or hello_address
         record_key(state, realm, agent_id, agent_name, backend, host, "key_file")
@@ -1507,11 +1556,22 @@ def cmd_call(args):
     state = State()
     entry = select_entry(state, parse_realm(args.realm), args.agent_id)
     key = load_key(entry)
-    status, resp = http(entry["realm"], method, path, body=body, key=key, host_agent=host_agent_name(entry.get("host_agent")))
+    target = target_for(key, entry["agent_id"])
+    if args.as_agent is not None:
+        if target is None:
+            raise HelperError("not_all_agents_key", "--as-agent needs a key your user made for all their agents; this key trades one agent only.")
+        if not AGENT_ID_RE.match(args.as_agent):
+            raise HelperError("invalid_agent", "An agent id is letters, digits, '_' or '-' (see GET /api/agent/v1/agents).")
+        target = args.as_agent
+    status, resp = http(entry["realm"], method, path, body=body, key=key, host_agent=host_agent_name(entry.get("host_agent")), agent=target)
     out = {"status": status, "ok": 200 <= status < 300, "realm": entry["realm"], "agent_id": entry["agent_id"], "body": resp}
+    if target is not None:
+        out["as_agent"] = target
     if status == 401:
         out["hint"] = ("Darwin no longer accepts this key (revoked, agent stopped, or its limits changed). "
                        "Pair again, reconnect with `pair reconnect`, or import a new key file.")
+        if target is not None:
+            out["hint"] += " With an all-agents key, a paused or stopped agent refuses it for that agent only: check `call GET /api/agent/v1/agents`."
     if method != "GET" and status >= 500:
         out["hint"] = "Not retried automatically. Check the outcome (see llms.txt for this endpoint's idempotency rules) before retrying."
     emit(out)
@@ -1529,7 +1589,8 @@ def cmd_status(args):
         if args.check:
             try:
                 key = load_key(e)
-                code, _ = http(e["realm"], "GET", GRANT_PATH, key=key, host_agent=host_agent_name(e.get("host_agent")))
+                code, _ = http(e["realm"], "GET", GRANT_PATH, key=key, host_agent=host_agent_name(e.get("host_agent")),
+                               agent=target_for(key, e["agent_id"]))
                 item["check"] = "ok" if code == 200 else ("rejected" if code in (401, 403) else "http_%d" % code)
             except HelperError as he:
                 item["check"] = he.code
@@ -1609,6 +1670,7 @@ def build_parser():
     c.add_argument("--json-file", default=None)
     c.add_argument("--realm", default=None)
     c.add_argument("--agent-id", default=None)
+    c.add_argument("--as-agent", default=None, help="all-agents key only: the agent to act on (X-Darwin-Agent)")
 
     st = sub.add_parser("status")
     st.add_argument("--check", action="store_true")

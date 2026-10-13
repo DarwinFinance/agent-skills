@@ -14,7 +14,11 @@ within two business days.
 - It cannot approve a pairing: only the account owner can, signed in to darwin.finance in
   their own browser, with their passkey (and 2FA if enabled).
 - It cannot move funds out of a Darwin agent account. The agent can never send funds out
-  of its Darwin account; moving perps margin back to the agent's own wallet is allowed.
+  of its Darwin account, and no Darwin credential can move funds between the owner's
+  accounts; moving perps margin between the agent's own wallet and its own perps account
+  is allowed.
+- It cannot create Darwin credentials. Only the account owner can, on darwin.finance; an
+  agent's key cannot mint another key.
   This is enforced by Darwin's servers and custody policy, not by this code.
 - It never prints, logs or passes on a command line the API key or the pairing device
   code, never follows redirects, and never contacts any other host.
