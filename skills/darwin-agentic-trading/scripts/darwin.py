@@ -47,7 +47,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 # ── Realms ────────────────────────────────────────────────────────────────────
 REALM_HOSTS = {"prod": "darwin.finance", "beta": "beta.darwin.finance"}
@@ -70,6 +70,8 @@ KEY_RE = re.compile(r"^(?:darwinAI_agents?_|agt_)[A-Za-z0-9_-]{20,200}$")
 OWNER_KEY_PREFIX = "darwinAI_mcp_"
 OWNER_KEY_RE = re.compile(r"^darwinAI_mcp_[A-Za-z0-9_-]{20,200}$")
 STORED_KEY_RE = re.compile(r"^(?:darwinAI_agents?_|darwinAI_mcp_|agt_)[A-Za-z0-9_-]{20,200}$")
+# How Darwin's /api/agent/v1/agents describes an owner key that trades ALL active Agentic Sub-Accounts.
+OWNER_ALL_PERMISSIONS_SUFFIX = " · Trade: all active agents"
 # The index entry of an owner key for ALL Agentic Sub-Accounts (it has no single agent of its own).
 ALL_SUB_ACCOUNTS_ID = "all-agentic-sub-accounts"
 DEVICE_CODE_RE = re.compile(r"^darwinAI_pair_[A-Za-z0-9_-]{40,114}$")
@@ -1535,6 +1537,9 @@ class KeyFile(object):
 
 
 def _parse_key_file(raw):
+    """(realm, agent_id, key, scope). Version 1: an agent key (scope None). Version 2 (Darwin's manual
+    setup): an OWNER key (`darwinAI_mcp_`) for ONE Agentic Sub-Account (scope "one", `agent_id` equal to
+    `trade.agent`) or ALL of them (scope "all", no `agent_id`). Anything else is refused."""
     if len(raw) > KEY_FILE_MAX_BYTES:
         raise HelperError("key_file_invalid", "That is not a Darwin key file (too large).")
     try:
@@ -1542,7 +1547,7 @@ def _parse_key_file(raw):
     except (ValueError, UnicodeDecodeError):
         raise HelperError("key_file_invalid", "That is not a Darwin key file (not JSON).")
     # `type(...) is int`: JSON true and 1.0 compare equal to 1 in Python, and are not version 1.
-    if not isinstance(data, dict) or data.get("type") != "darwin-agent-key" or type(data.get("version")) is not int or data.get("version") != 1:
+    if not isinstance(data, dict) or data.get("type") != "darwin-agent-key" or type(data.get("version")) is not int or data.get("version") not in (1, 2):
         raise HelperError("key_file_invalid", "That is not a Darwin key file (type/version).")
     key = data.get("key")
     if isinstance(key, str):
@@ -1550,12 +1555,27 @@ def _parse_key_file(raw):
     realm_host = data.get("realm")
     if not isinstance(realm_host, str) or realm_host not in HOST_TO_REALM:
         raise HelperError("key_file_invalid", "The key file names an unknown realm; only darwin.finance and beta.darwin.finance are accepted.")
-    if not isinstance(key, str) or not KEY_RE.match(key):
-        raise HelperError("key_file_invalid", "The key file has no valid Darwin agent key.")
-    agent_id = safe_agent_id(data.get("agent_id"))
-    if not agent_id:
-        raise HelperError("key_file_invalid", "The key file has no valid agent_id.")
-    return HOST_TO_REALM[realm_host], agent_id, key
+    if data["version"] == 1:
+        if not isinstance(key, str) or not KEY_RE.match(key):
+            raise HelperError("key_file_invalid", "The key file has no valid Darwin agent key.")
+        agent_id = safe_agent_id(data.get("agent_id"))
+        if not agent_id:
+            raise HelperError("key_file_invalid", "The key file has no valid agent_id.")
+        return HOST_TO_REALM[realm_host], agent_id, key, None
+    # Version 2: an owner key. Its own shape must agree with itself, or nothing is imported.
+    if data.get("credential") != "owner_key" or not isinstance(key, str) or not OWNER_KEY_RE.match(key):
+        raise HelperError("key_file_invalid", "The key file has no valid Darwin owner key.")
+    trade = data.get("trade")
+    if not isinstance(trade, dict):
+        raise HelperError("key_file_invalid", "The key file does not say what its key may trade.")
+    if trade.get("scope") == "agent" and set(trade) == {"scope", "agent"}:
+        agent_id = safe_agent_id(trade.get("agent"))
+        if not agent_id or data.get("agent_id") != agent_id:
+            raise HelperError("key_file_invalid", "The key file's agent_id and trade disagree.")
+        return HOST_TO_REALM[realm_host], agent_id, key, "one"
+    if trade.get("scope") == "all_active" and set(trade) == {"scope"} and "agent_id" not in data:
+        return HOST_TO_REALM[realm_host], ALL_SUB_ACCOUNTS_ID, key, "all"
+    raise HelperError("key_file_invalid", "The key file's trade scope is not one this helper knows.")
 
 
 def cmd_import(args):
@@ -1567,7 +1587,7 @@ def cmd_import(args):
 
 
 def _import(args, kf):
-    realm, agent_id, key = _parse_key_file(kf.read())
+    realm, agent_id, key, scope = _parse_key_file(kf.read())
     # 🔴 The file's `realm` is unsigned. It must AGREE with the realm the agent was told
     # to use (prod unless `--realm beta` was passed explicitly), so an edited file can
     # never on its own make the helper send a key somewhere other than intended.
@@ -1577,6 +1597,8 @@ def _import(args, kf):
                           "If the key really is for %s, re-run with --realm %s." % (REALM_HOSTS[realm], REALM_HOSTS[wanted], REALM_HOSTS[realm], realm))
     host = host_agent_name(args.client_name)
     state = State()
+    if scope == "all":
+        return _import_owner_all(args, kf, state, realm, key, host)
     with state.lock():
         backend = choose_backend()
         status, body = http(realm, "GET", GRANT_PATH, key=key, host_agent=host, agent=target_for(key, agent_id))
@@ -1594,7 +1616,8 @@ def _import(args, kf):
         welcome, agent_name, hello_address, hello_err = say_hello(realm, key, host, agent_id)
         # /grant's own `wallet` (this key's agent) else /hello's.
         address = safe_solana_address(grant.get("wallet")) or hello_address
-        record_key(state, realm, agent_id, agent_name, backend, host, "key_file")
+        record_key(state, realm, agent_id, agent_name, backend, host, "key_file",
+                   credential="owner_key" if scope == "one" else None, scope=scope)
     deleted = False
     delete_error = None
     if not args.keep_file:
@@ -1602,6 +1625,7 @@ def _import(args, kf):
         deleted = delete_error is None
     out = {"status": "imported", "agent": agent_name, "agent_id": agent_id, "realm": realm, "stored_in": backend.description,
            "key_file_deleted": deleted, "welcome": welcome,
+           **({"credential": "owner_key"} if scope == "one" else {}),
            "next": ("%s Then run `call GET /api/agent/v1/grant`." % (
                SHOW_WELCOME if welcome is not None else (SHOW_ADDRESS_BLOCK if address else ""))).strip()}
     with_address(out, welcome, address)
@@ -1616,6 +1640,48 @@ def _import(args, kf):
     if hello_err:
         out["hello_error"] = hello_err
     emit(out)
+    return 0
+
+
+def _delete_detail(args, kf):
+    """Delete the imported file unless kept. Returns (deleted, detail)."""
+    if args.keep_file:
+        return False, "The key file was kept (--keep-file). Tell your user to delete it when it is no longer needed."
+    err = kf.delete()
+    if err is None:
+        return True, "The key file was deleted after import."
+    if err == "shared_folder":
+        return False, "The key file is in a folder other users can write to, so it was not deleted automatically. Tell your user to delete it."
+    return False, "Could not delete the key file (%s). Tell your user to delete it." % err
+
+
+def _import_owner_all(args, kf, state, realm, key, host):
+    """A version-2 owner key for ALL Agentic Sub-Accounts: checked against the agents list (it has no agent of
+    its own), stored under the all-sub-accounts entry; each account call then names its agent (`--as-agent`)."""
+    with state.lock():
+        backend = choose_backend()
+        status, body = http(realm, "GET", "/api/agent/v1/agents", key=key, host_agent=host)
+        if status in (401, 403):
+            raise HelperError("key_rejected", "Darwin did not accept this key (revoked or disconnected). Nothing was stored.", http_status=status)
+        if status != 200 or not isinstance(body, dict):
+            raise HelperError("key_check_failed", "Could not verify the key (HTTP %d). Nothing was stored." % status, http_status=status)
+        # The file's `trade` is unsigned: Darwin's own answer must say this key trades ALL active agents
+        # (a one-sub-account or read-only key also lists agents) — or nothing is stored or overwritten.
+        perms = body.get("permissions")
+        if not isinstance(perms, str) or not perms.endswith(OWNER_ALL_PERMISSIONS_SUFFIX) or "whole account" not in perms:
+            raise HelperError("scope_mismatch", "Darwin says this key does not trade all your user's Agentic Sub-Accounts, "
+                              "so the key file is wrong. Nothing was stored; the key file was kept.")
+        try:
+            store_key(backend, realm, ALL_SUB_ACCOUNTS_ID, key)
+        except Exception as e:
+            raise HelperError("store_failed", "Could not store the key in %s (%s). Nothing was imported; the key file was kept." % (backend.description, redact(str(e))[:80]))
+        record_key(state, realm, ALL_SUB_ACCOUNTS_ID, None, backend, host, "key_file", credential="owner_key", scope="all")
+    deleted, detail = _delete_detail(args, kf)
+    emit({"status": "imported", "agent_id": ALL_SUB_ACCOUNTS_ID, "realm": realm, "stored_in": backend.description,
+          "credential": "owner_key", "all_agents": True, "all_agents_note": OWNER_ALL_NOTE,
+          "key_file_deleted": deleted, "detail": detail,
+          "next": ("Tell your user, in one short sentence, that you are connected to their Darwin account and can trade out of "
+                   "their Agentic Sub-Accounts. %s" % AFTER_SETUP).strip()})
     return 0
 
 
@@ -1750,7 +1816,7 @@ def build_parser():
     w = psub.add_parser("wait")
     w.add_argument("--max-seconds", default=DEFAULT_WAIT_SECS, type=int)
 
-    imp = sub.add_parser("import", help="import a key file downloaded from the agent's Manage tab")
+    imp = sub.add_parser("import", help="import a key file downloaded from Darwin (an agent key, or an owner key from manual setup)")
     imp.add_argument("file")
     imp.add_argument("--realm", default=None)
     imp.add_argument("--keep-file", action="store_true")
@@ -1763,7 +1829,7 @@ def build_parser():
     c.add_argument("--json-file", default=None)
     c.add_argument("--realm", default=None)
     c.add_argument("--agent-id", default=None)
-    c.add_argument("--as-agent", default=None, help="all-agents key only: the agent to act on (X-Darwin-Agent)")
+    c.add_argument("--as-agent", default=None, help="all-agents or all-sub-accounts owner key only: the agent to act on (X-Darwin-Agent)")
 
     st = sub.add_parser("status")
     st.add_argument("--check", action="store_true")

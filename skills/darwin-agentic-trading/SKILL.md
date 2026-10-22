@@ -12,7 +12,7 @@ license: MIT
 compatibility: Needs python3 (3.8+) and outbound HTTPS to darwin.finance. Without python3, follow https://darwin.finance/agents/setup.md instead.
 metadata:
   author: Darwin Finance
-  version: "1.2.0"
+  version: "1.3.0"
   homepage: https://darwin.finance/agents/setup
   repository: https://github.com/DarwinFinance/agent-skills
 ---
@@ -208,14 +208,20 @@ reconnected. If the helper returns `reconnect_unsupported`, use a key file inste
 
 ## Import a key file
 
-Your user can create a key on the agent's **Manage** tab and press **Download key
-file**. Then:
+Your user can create a key on the agent's **Manage** tab, or by setting one up
+manually on Darwin, and press **Download key file**. Then:
 
     darwin.py import <path to the downloaded .json file>
 
 The helper checks the key with Darwin, stores it, and deletes the file (pass
 `--keep-file` to keep it). The key never passes through this chat. A key for beta needs
 `--realm beta`; the helper refuses a file whose realm does not match.
+
+A manually set-up key may be an **owner key** (`"version": 2`, `"credential": "owner_key"`):
+it reads your user's whole Darwin account and trades only what its `trade` field names.
+For one Agentic Sub-Account, `call` works as usual. For all of them (`"scope": "all_active"`),
+run `darwin.py call GET /api/agent/v1/agents` to see them, then add `--as-agent <id>` to
+every account call.
 
 ## Already set up, or something went wrong
 

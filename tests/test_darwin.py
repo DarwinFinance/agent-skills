@@ -1164,6 +1164,123 @@ class Ancestors(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+# ── import: version-2 OWNER key files (Darwin's manual setup, 1.3.0) ──────────
+ALL_PERMS = "Read: all Darwin market data, plus your whole account · Trade: all active agents"
+
+
+class ImportOwnerKeyFile(Base):
+    GRANT_URL = ("GET", PROD + "/api/agent/v1/grant")
+    HELLO_URL = ("GET", PROD + "/api/agent/v1/hello")
+    AGENTS_URL = ("GET", PROD + "/api/agent/v1/agents")
+
+    def keyfile(self, data):
+        path = os.path.join(self.tmp, "darwin-ai-key.json")
+        with open(path, "w") as f:
+            json.dump(data, f)
+        return path
+
+    def one(self, **over):
+        d = {"type": "darwin-agent-key", "version": 2, "realm": "darwin.finance", "credential": "owner_key",
+             "trade": {"scope": "agent", "agent": GRANT}, "agent_id": GRANT, "key": OWNER_KEY}
+        d.update(over)
+        return d
+
+    def all(self, **over):
+        d = {"type": "darwin-agent-key", "version": 2, "realm": "darwin.finance", "credential": "owner_key",
+             "trade": {"scope": "all_active"}, "key": OWNER_KEY}
+        d.update(over)
+        return d
+
+    def test_one_sub_account_owner_key_is_checked_against_its_agent_and_stored_as_an_owner_key(self):
+        path = self.keyfile(self.one())
+        op = self.use({self.GRANT_URL: [(200, {"ok": True, "grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+        self.assertEqual(out["credential"], "owner_key")
+        self.assertEqual(out["agent_id"], GRANT)
+        self.assertEqual(FakeStore.data["darwin.finance:" + GRANT], OWNER_KEY)
+        # A one-sub-account owner key names no agent: Darwin resolves its own.
+        self.assertNotIn("X-darwin-agent", op.requests[0]["headers"])
+        entry = D.State().index()[0]
+        self.assertEqual((entry["credential"], entry["scope"]), ("owner_key", "one"))
+        self.assertFalse(os.path.exists(path))
+        # …and it can never name another agent.
+        op = self.use({})
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", "agr_other")
+        self.assertEqual(out["error"], "not_all_agents_key")
+
+    def test_one_sub_account_key_for_a_different_agent_stores_nothing(self):
+        path = self.keyfile(self.one())
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": "agr_other"}})]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["error"], "agent_mismatch")
+        self.assertEqual(FakeStore.data, {})
+
+    def test_all_sub_accounts_owner_key_checks_the_agents_list_and_then_needs_as_agent(self):
+        path = self.keyfile(self.all())
+        op = self.use({self.AGENTS_URL: [(200, {"permissions": ALL_PERMS, "agents": []})], self.GRANT_URL: [(200, {"ok": True})]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+        self.assertEqual(out["agent_id"], D.ALL_SUB_ACCOUNTS_ID)
+        self.assertTrue(out["all_agents"])
+        self.assertIn("--as-agent", out["all_agents_note"])
+        self.assertTrue(out["key_file_deleted"])
+        self.assertEqual(FakeStore.data["darwin.finance:" + D.ALL_SUB_ACCOUNTS_ID], OWNER_KEY)
+        self.assertNotIn("X-darwin-agent", op.requests[0]["headers"])
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", GRANT)
+        self.assertEqual(op.requests[1]["headers"]["X-darwin-agent"], GRANT)
+
+    def test_a_one_sub_account_or_read_only_key_disguised_as_all_is_refused_and_overwrites_nothing(self):
+        FakeStore.data["darwin.finance:" + D.ALL_SUB_ACCOUNTS_ID] = "darwinAI_mcp_" + "P" * 43
+        for perms in ("Read: all Darwin market data, plus your whole account · Trade: one agent",
+                      "Read: all Darwin market data, plus your whole account · Trade: none", None, 7):
+            path = self.keyfile(self.all())
+            self.use({self.AGENTS_URL: [(200, {"permissions": perms, "agents": []})]})
+            code, out = self.run_cli("import", path)
+            self.assertEqual(out["error"], "scope_mismatch", perms)
+            self.assertTrue(os.path.exists(path))
+            self.assertEqual(FakeStore.data["darwin.finance:" + D.ALL_SUB_ACCOUNTS_ID], "darwinAI_mcp_" + "P" * 43)
+
+    def test_rejected_all_key_stores_nothing_and_keeps_the_file(self):
+        path = self.keyfile(self.all())
+        self.use({self.AGENTS_URL: [(401, {"error": "unauthorized"})]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["error"], "key_rejected")
+        self.assertEqual({k: v for k, v in FakeStore.data.items() if not k.startswith("probe:")}, {})
+        self.assertTrue(os.path.exists(path))
+
+    def test_a_v2_file_that_disagrees_with_itself_is_refused_before_anything_is_sent(self):
+        op = self.use({})
+        cases = [
+            self.one(credential="agent_key"),
+            self.one(credential=None),
+            self.one(key=KEY),                                   # an agent key in an owner-key file
+            self.one(key=ALL_KEY),
+            self.one(agent_id="agr_other"),                     # agent_id and trade disagree
+            self.one(trade={"scope": "agent"}),
+            self.one(trade={"scope": "agent", "agent": GRANT, "extra": 1}),
+            self.one(trade="agent"),
+            self.all(agent_id=GRANT),                           # an all-sub-accounts file carries no agent_id
+            self.all(trade={"scope": "all_active", "agent": GRANT}),
+            self.all(trade={"scope": "none"}),
+            self.one(version=3),
+            self.one(realm="evil.example"),
+        ]
+        for data in cases:
+            path = self.keyfile(data)
+            code, out = self.run_cli("import", path)
+            self.assertEqual(out["error"], "key_file_invalid", data)
+            self.assertTrue(os.path.exists(path))
+        self.assertEqual(op.requests, [])
+        self.assertEqual(FakeStore.data, {})
+
+    def test_version_1_files_still_import_exactly_as_before(self):
+        realm, agent_id, key, scope = D._parse_key_file(json.dumps(
+            {"type": "darwin-agent-key", "version": 1, "realm": "darwin.finance", "agent_id": GRANT, "key": KEY}).encode("utf-8"))
+        self.assertEqual((realm, agent_id, key, scope), ("prod", GRANT, KEY, None))
+
+
 if __name__ == "__main__":
     unittest.main()
 
