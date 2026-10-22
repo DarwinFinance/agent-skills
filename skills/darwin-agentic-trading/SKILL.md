@@ -12,7 +12,7 @@ license: MIT
 compatibility: Needs python3 (3.8+) and outbound HTTPS to darwin.finance. Without python3, follow https://darwin.finance/agents/setup.md instead.
 metadata:
   author: Darwin Finance
-  version: "1.1.0"
+  version: "1.2.0"
   homepage: https://darwin.finance/agents/setup
   repository: https://github.com/DarwinFinance/agent-skills
 ---
@@ -136,6 +136,9 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
 
    Pairing creates a **brand-new agent account**, which starts empty until your user
    funds it. The page marks your client name as unverified; that is expected.
+   Where Darwin offers it, the page may instead let your user connect you to one or all
+   of their **existing** Agentic Sub-Accounts (it asks them to confirm with their passkey,
+   and 2FA if they use it). They choose; you never ask for one or the other.
 
 2. Wait:
 
@@ -147,6 +150,10 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
    if your user still wants to connect. On `paired` the key is already stored.
    A paired key does not expire (`expires_at` is `null`): it works until your user
    revokes it, stops the agent or changes its limits.
+   If `pair wait` returns `credential: "owner_key"`, your user gave you their own Darwin
+   API key: it reads their whole account and trades only the Agentic Sub-Accounts they
+   chose. It can't withdraw or move funds between their accounts. They revoke it on
+   Darwin's MCP page.
 
 ## After pairing
 
@@ -175,7 +182,10 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
    It adds the key. If `pair wait` returned `all_agents: true`, your user let this key
    trade all their active agents: `call` names the paired agent in the
    `X-Darwin-Agent` header for you; add `--as-agent <id>` to act on another one
-   (`darwin.py call GET /api/agent/v1/agents` lists them). Market data
+   (`darwin.py call GET /api/agent/v1/agents` lists them). If it returned
+   `all_agents: true` with `credential: "owner_key"` there is no paired agent: name the
+   Agentic Sub-Account with `--as-agent <id>` on every account call (there is no
+   `welcome` to show; tell your user in one sentence that you are connected). Market data
    (`POST /api/agent/v1/data/{tool}`) works with any key and needs no agent. It never retries a non-GET on its own: follow llms.txt's
    idempotency rules before retrying an order.
 5. Before a US stock or ETF trade, run `darwin.py call GET /api/agent/v1/market-status/us-equities`

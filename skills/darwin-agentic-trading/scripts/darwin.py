@@ -47,7 +47,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # ── Realms ────────────────────────────────────────────────────────────────────
 REALM_HOSTS = {"prod": "darwin.finance", "beta": "beta.darwin.finance"}
@@ -65,6 +65,13 @@ DEVICE_CODE_PREFIX = "darwinAI_pair_"
 ALL_AGENTS_KEY_PREFIX = "darwinAI_agents_"
 AGENT_HEADER = "X-Darwin-Agent"
 KEY_RE = re.compile(r"^(?:darwinAI_agents?_|agt_)[A-Za-z0-9_-]{20,200}$")
+# Darwin's pairing v2: an OWNER key (`darwinAI_mcp_`) your user approved for one Agentic Sub-Account, or
+# for all of them. Accepted ONLY from a pairing this helper started with `credential: 2`.
+OWNER_KEY_PREFIX = "darwinAI_mcp_"
+OWNER_KEY_RE = re.compile(r"^darwinAI_mcp_[A-Za-z0-9_-]{20,200}$")
+STORED_KEY_RE = re.compile(r"^(?:darwinAI_agents?_|darwinAI_mcp_|agt_)[A-Za-z0-9_-]{20,200}$")
+# The index entry of an owner key for ALL Agentic Sub-Accounts (it has no single agent of its own).
+ALL_SUB_ACCOUNTS_ID = "all-agentic-sub-accounts"
 DEVICE_CODE_RE = re.compile(r"^darwinAI_pair_[A-Za-z0-9_-]{40,114}$")
 USER_CODE_RE = re.compile(r"^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -259,8 +266,15 @@ def is_all_agents_key(key):
 
 def target_for(key, agent_id):
     """The X-Darwin-Agent value a call with this key must carry: the agent id for an all-agents key
-    (Darwin refuses its account calls without one, /hello included), nothing for a one-agent key."""
+    (Darwin refuses its account calls without one, /hello included), nothing for a one-agent key.
+    An owner key names nothing by default: a one-sub-account key goes to its own, and an all key's
+    agent is named per call (`--as-agent`)."""
     return agent_id if is_all_agents_key(key) else None
+
+
+def can_name_agent(entry, key):
+    """Whether `--as-agent` may name another agent with this key: an all-agents key, or an owner key for all."""
+    return is_all_agents_key(key) or (entry.get("credential") == "owner_key" and entry.get("scope") == "all")
 
 
 def http(realm, method, path, *, body=None, key=None, host_agent=None, accept_status=None, agent=None):
@@ -976,13 +990,17 @@ def safe_text(value, cap=80):
     return redact(v)
 
 
-def record_key(state, realm, agent_id, agent_name, backend, host_agent, source):
+def record_key(state, realm, agent_id, agent_name, backend, host_agent, source, credential=None, scope=None):
     agent_name = safe_text(agent_name, 80)
     entries = [e for e in state.index() if not (e["realm"] == realm and e["agent_id"] == agent_id)]
-    entries.append({
+    entry = {
         "realm": realm, "agent_id": agent_id, "agent": agent_name, "stored_in": backend.name,
         "host_agent": ua_host(host_agent), "source": source, "stored_at": int(time.time()),
-    })
+    }
+    if credential == "owner_key" and scope in ("one", "all"):
+        entry["credential"] = "owner_key"
+        entry["scope"] = scope
+    entries.append(entry)
     state.save_index(entries)
 
 
@@ -1013,7 +1031,7 @@ def load_key(entry):
         key = backend.get(account_name(entry["realm"], entry["agent_id"]))
     except Exception as e:
         raise HelperError("secret_store_unavailable", "Could not read the key from %s (%s)." % (backend.description, redact(str(e))[:120]))
-    if not key or not KEY_RE.match(key):
+    if not key or not STORED_KEY_RE.match(key):
         raise HelperError("key_missing", "The stored key is gone (memory-only keys vanish at reboot). Pair again or import a key file.")
     remember_secret(key)
     return key
@@ -1169,6 +1187,11 @@ def cmd_pair_start(args):
         body = {"client_name": client}
         if mode == "reconnect":
             body["mode"] = "reconnect"
+        else:
+            # Darwin's pairing v2: this helper can hold an OWNER key, so your user may connect this agent
+            # to one or all of their EXISTING Agentic Sub-Accounts, not only a new one. Darwin decides:
+            # it echoes `credential: 2` only when it will offer that, and an older Darwin ignores the field.
+            body["credential"] = 2
         status, resp = http(realm, "POST", PAIR_PATH, body=body, host_agent=host_agent_name(client))
         if not isinstance(resp, dict):
             resp = {}
@@ -1210,7 +1233,7 @@ def cmd_pair_start(args):
             "v": 1, "realm": realm, "mode": mode, "device_code": device_code, "user_code": user_code, "url": url,
             "interval": interval, "next_poll_at": now + interval, "created_at": now,
             "hard_expires_at": now + PAIR_MAX_LIFETIME_SECS + 30, "client_name": client, "backend": backend.name,
-            "transport_errors": 0,
+            "transport_errors": 0, "asked_owner_key": mode == "new",
         })
     out = {
         "status": "show_user", "url": url, "user_code": user_code, "expires_in": expires_in, "realm": realm, "mode": mode,
@@ -1325,9 +1348,77 @@ def cmd_pair_wait(args):
             state.save_pending(p)
 
 
+def _owner_key_target(p, realm, resp):
+    """For an owner-key answer: (agent_id for the index, scope) — or a HelperError. Only from a pairing
+    this helper started asking for one, only a `darwinAI_mcp_` key, only one of the two trade shapes."""
+    key_name = safe_text(resp.get("key_name"), 80) or "Paired: %s" % p.get("client_name", "agent")
+    bad = HelperError("bad_response", "Darwin's key answer was malformed; nothing was stored. Ask your user to revoke the API key "
+                      "named \"%s\" on Darwin's MCP page, then pair again." % key_name)
+    token = resp.get("access_token")
+    if not p.get("asked_owner_key") or not isinstance(token, str) or not OWNER_KEY_RE.match(token):
+        raise bad
+    trade = resp.get("trade") if isinstance(resp.get("trade"), dict) else {}
+    if trade.get("scope") == "agent":
+        agent_id = safe_agent_id(trade.get("agent"))
+        if not agent_id:
+            raise bad
+        return agent_id, "one"
+    if trade.get("scope") == "all_active":
+        return ALL_SUB_ACCOUNTS_ID, "all"
+    raise bad
+
+
+OWNER_ALL_NOTE = ("Your user let this key trade ALL their Agentic Sub-Accounts, including ones they create later. "
+                  "Run `call GET /api/agent/v1/agents` to see them, then name the one to act on with `--as-agent <id>` "
+                  "on every account call. Each sub-account's own limits apply.")
+
+
+def _finish_owner_key(state, p, realm, backend, host, resp):
+    token = resp.get("access_token")
+    if isinstance(token, str):
+        remember_secret(token)
+    key_name = safe_text(resp.get("key_name"), 80) or "Paired: %s" % p.get("client_name", "agent")
+    try:
+        agent_id, scope = _owner_key_target(p, realm, resp)
+    except HelperError:
+        state.clear_pending()
+        raise
+    try:
+        store_key(backend, realm, agent_id, token)
+    except Exception:
+        state.clear_pending()
+        raise HelperError("store_failed_after_issue",
+                          "The key was issued but could not be stored, and it is NOT shown here. Ask your user to revoke the API key "
+                          "named \"%s\" on Darwin's MCP page, then pair again." % key_name)
+    record_key(state, realm, agent_id, None, backend, host, "pairing", credential="owner_key", scope=scope)
+    state.clear_pending()
+    out = {"status": "paired", "agent_id": agent_id, "realm": realm, "mode": p.get("mode", "new"), "credential": "owner_key",
+           "stored_in": backend.description, "key_name": key_name}
+    if scope == "all":
+        out["all_agents"] = True
+        out["all_agents_note"] = OWNER_ALL_NOTE
+        out["next"] = ("Tell your user, in one short sentence, that you are connected to their Darwin account and can trade out of "
+                       "their Agentic Sub-Accounts. %s" % AFTER_SETUP).strip()
+        emit(out)
+        return 0
+    welcome, hello_agent, hello_address, hello_err = say_hello(realm, token, host, agent_id)
+    out["agent"] = safe_text(hello_agent, 80)
+    out["welcome"] = welcome
+    show = SHOW_WELCOME if welcome is not None else (SHOW_ADDRESS_BLOCK if hello_address else "")
+    out["next"] = ("%s %s Before your first order, run `call GET /api/agent/v1/grant` and read %s/agents/docs/llms.txt." % (
+        show, AFTER_SETUP, realm_origin(realm))).strip()
+    with_address(out, welcome, hello_address)
+    if hello_err:
+        out["hello_error"] = hello_err
+    emit(out)
+    return 0
+
+
 def _finish_pairing(state, p, realm, backend, host, resp):
     """The key is in memory only. The pending file (marked in_flight) is kept until the key
     is durably stored, so a crash here is reported as `lost` by the next `pair wait`."""
+    if resp.get("credential") == "owner_key":
+        return _finish_owner_key(state, p, realm, backend, host, resp)
     token = resp.get("access_token")
     if isinstance(token, str):
         remember_secret(token)
@@ -1558,7 +1649,7 @@ def cmd_call(args):
     key = load_key(entry)
     target = target_for(key, entry["agent_id"])
     if args.as_agent is not None:
-        if target is None:
+        if not can_name_agent(entry, key):
             raise HelperError("not_all_agents_key", "--as-agent needs a key your user made for all their agents; this key trades one agent only.")
         if not AGENT_ID_RE.match(args.as_agent):
             raise HelperError("invalid_agent", "An agent id is letters, digits, '_' or '-' (see GET /api/agent/v1/agents).")
@@ -1589,7 +1680,9 @@ def cmd_status(args):
         if args.check:
             try:
                 key = load_key(e)
-                code, _ = http(e["realm"], "GET", GRANT_PATH, key=key, host_agent=host_agent_name(e.get("host_agent")),
+                # An owner key for ALL sub-accounts has no agent of its own: its check is the agents list.
+                path = "/api/agent/v1/agents" if e.get("credential") == "owner_key" and e.get("scope") == "all" else GRANT_PATH
+                code, _ = http(e["realm"], "GET", path, key=key, host_agent=host_agent_name(e.get("host_agent")),
                                agent=target_for(key, e["agent_id"]))
                 item["check"] = "ok" if code == 200 else ("rejected" if code in (401, 403) else "http_%d" % code)
             except HelperError as he:

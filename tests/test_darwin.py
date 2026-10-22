@@ -38,6 +38,7 @@ def read_json(path):
 KEY = "darwinAI_agent_" + "K" * 43
 KEY2 = "darwinAI_agent_" + "Q" * 43
 ALL_KEY = "darwinAI_agents_" + "A" * 43
+OWNER_KEY = "darwinAI_mcp_" + "O" * 43
 OTHER_AGENT = "agr_other456"
 DEVICE = "darwinAI_pair_" + "d" * 43
 GRANT = "agr_test123"
@@ -152,6 +153,19 @@ def token_ok(host=PROD, key=KEY):
     return (200, body)
 
 
+def owner_token_ok(scope="agent", key=OWNER_KEY):
+    body = {"access_token": key, "token_type": "Bearer", "credential": "owner_key", "key_name": "Paired: Claude Code",
+            "mode": "new", "permissions": "Read: all Darwin market data, plus your whole account",
+            "all_agents": scope != "agent", "message": "I'm connected to your Darwin account.", "instructions": "…",
+            "next": "GET /api/agent/v1/hello" if scope == "agent" else "GET /api/agent/v1/agents"}
+    if scope == "agent":
+        body["trade"] = {"scope": "agent", "agent": GRANT}
+        body["agent"] = {"id": GRANT}
+    else:
+        body["trade"] = {"scope": "all_active"}
+    return (200, body)
+
+
 HELLO = (200, {"welcome": "Welcome! You are trading as my-agent.", "ok": True, "agent": "my-agent"})
 
 
@@ -180,7 +194,7 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
         # 🔴 Global invariant: no secret ever reached stdout or stderr in any test.
         for out, err in self.outputs:
-            for secret in (KEY, KEY2, ALL_KEY, DEVICE, "K" * 20, "d" * 20, "A" * 20):
+            for secret in (KEY, KEY2, ALL_KEY, OWNER_KEY, DEVICE, "K" * 20, "d" * 20, "A" * 20, "O" * 20):
                 self.assertNotIn(secret, out)
                 self.assertNotIn(secret, err)
 
@@ -217,7 +231,9 @@ class PairStart(Base):
         self.assertEqual(out["user_code"], "BCDF-GHJK")
         self.assertEqual(out["realm"], "prod")
         req = self.opener.requests[0]
-        self.assertEqual(req["body"], {"client_name": "Claude Code"})
+        # A NEW pairing says it can hold an owner key (`credential: 2`, Darwin's pairing v2). Darwin
+        # records it only while its pairing v2 switch is on, and an older Darwin ignores the field.
+        self.assertEqual(req["body"], {"client_name": "Claude Code", "credential": 2})
         self.assertTrue(req["headers"]["User-agent"].startswith("darwin-agent-skill/%s (Claude Code)" % D.__version__))
         self.assertEqual(req["headers"]["X-darwin-client"], "claude; harness=darwin-agent-skill; version=%s" % D.__version__)
         pending = os.path.join(self.state_dir, "pending.json")
@@ -323,6 +339,52 @@ class PairWait(Base):
         self.assertEqual(FakeStore.data["darwin.finance:" + GRANT], ALL_KEY)
         hello = [r for r in op.requests if r["url"].endswith("/hello")][0]
         self.assertEqual(hello["headers"]["X-darwin-agent"], GRANT)
+
+    def test_owner_key_for_one_sub_account_is_stored_under_it(self):
+        # Darwin's pairing v2: your user approved an OWNER key that trades one Agentic Sub-Account.
+        self.start()
+        op = self.use({self.TOKEN: [owner_token_ok()], self.HELLO_KEY: [HELLO]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertEqual(out["agent_id"], GRANT)
+        self.assertEqual(out["credential"], "owner_key")
+        self.assertNotIn("all_agents", out)
+        self.assertEqual(FakeStore.data["darwin.finance:" + GRANT], OWNER_KEY)
+        hello = [r for r in op.requests if r["url"].endswith("/hello")][0]
+        self.assertNotIn("X-darwin-agent", hello["headers"])
+        idx = read_json(os.path.join(self.state_dir, "keys.json"))
+        self.assertEqual(idx["keys"][0]["credential"], "owner_key")
+        self.assertEqual(idx["keys"][0]["scope"], "one")
+
+    def test_owner_key_for_all_sub_accounts_needs_an_agent_named_per_call(self):
+        self.start()
+        op = self.use({self.TOKEN: [owner_token_ok(scope="all_active")]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertTrue(out["all_agents"])
+        self.assertEqual(out["agent_id"], D.ALL_SUB_ACCOUNTS_ID)
+        self.assertIn("--as-agent", out["all_agents_note"])
+        self.assertEqual(FakeStore.data["darwin.finance:" + D.ALL_SUB_ACCOUNTS_ID], OWNER_KEY)
+        # No /hello without an agent to name.
+        self.assertEqual([r for r in op.requests if r["url"].endswith("/hello")], [])
+
+    def test_owner_key_is_refused_when_this_pairing_never_asked_for_one(self):
+        self.use({("POST", PROD + "/api/agent/v1/pair"): [pair_ok(mode="reconnect")]})
+        self.run_cli("pair", "start", "--reconnect", "--client-name", "Claude Code")
+        self.assertNotIn("credential", self.opener.requests[0]["body"])
+        self.use({self.TOKEN: [owner_token_ok()]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "bad_response")
+        self.assertEqual(FakeStore.data, {})
+
+    def test_malformed_owner_key_answer_stores_nothing(self):
+        for bad in (owner_token_ok(key="darwinAI_mcp_short"), (200, dict(owner_token_ok()[1], trade={"scope": "agent", "agent": "bad id"})),
+                    (200, dict(owner_token_ok()[1], trade={"scope": "weird"}))):
+            self.start()
+            self.use({self.TOKEN: [bad]})
+            code, out = self.run_cli("pair", "wait")
+            self.assertEqual(out["error"], "bad_response", bad)
+            self.assertEqual(FakeStore.data, {})
 
     def test_one_agent_key_sends_no_agent_header(self):
         self.start()
@@ -566,6 +628,25 @@ class Call(Base):
         code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", "bad id\n")
         self.assertEqual(out["error"], "invalid_agent")
         self.assertEqual(len(op.requests), 2)
+
+    def test_owner_key_for_all_names_the_agent_asked_for_and_none_by_default(self):
+        FakeStore.data["darwin.finance:" + D.ALL_SUB_ACCOUNTS_ID] = OWNER_KEY
+        D.record_key(D.State(), "prod", D.ALL_SUB_ACCOUNTS_ID, None, FakeStore(), "Claude Code", "pairing",
+                     credential="owner_key", scope="all")
+        op = self.use({("GET", PROD + "/api/agent/v1/agents"): [(200, {"ok": True})], ("GET", PROD + "/api/agent/v1/grant"): [(200, {"ok": True})]})
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/agents")
+        self.assertNotIn("X-darwin-agent", op.requests[0]["headers"])
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", OTHER_AGENT)
+        self.assertEqual(op.requests[1]["headers"]["X-darwin-agent"], OTHER_AGENT)
+        self.assertEqual(op.requests[1]["headers"]["Authorization"], "Bearer " + OWNER_KEY)
+
+    def test_owner_key_for_one_refuses_as_agent(self):
+        FakeStore.data["darwin.finance:" + GRANT] = OWNER_KEY
+        D.record_key(D.State(), "prod", GRANT, "my-agent", FakeStore(), "Claude Code", "pairing", credential="owner_key", scope="one")
+        op = self.use({})
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--as-agent", OTHER_AGENT)
+        self.assertEqual(out["error"], "not_all_agents_key")
+        self.assertEqual(op.requests, [])
 
     def test_as_agent_refused_for_a_one_agent_key(self):
         self.paired()
