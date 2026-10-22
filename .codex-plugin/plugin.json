@@ -1,6 +1,6 @@
 {
   "name": "darwin",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Official Darwin Finance skill: set up a Darwin agent for agentic trading on darwin.finance.",
   "skills": "./skills",
   "interface": {
