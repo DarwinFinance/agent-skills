@@ -47,7 +47,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 # ── Realms ────────────────────────────────────────────────────────────────────
 REALM_HOSTS = {"prod": "darwin.finance", "beta": "beta.darwin.finance"}
@@ -1237,10 +1237,20 @@ def cmd_pair_start(args):
             "hard_expires_at": now + PAIR_MAX_LIFETIME_SECS + 30, "client_name": client, "backend": backend.name,
             "transport_errors": 0, "asked_owner_key": mode == "new",
         })
+    # What the user chooses on the page: Darwin echoes `credential: 2` only when it will offer EXISTING
+    # sub-accounts too; otherwise (an older Darwin, or its pairing v2 switched off) only a new one.
+    if mode == "reconnect":
+        choice, say = "existing", "press Yes, then pick the agent to reconnect"
+    elif resp.get("credential") == 2:
+        choice, say = "new_or_existing", ("press Yes, then choose on Darwin whether to create a new Agentic Sub-Account for you "
+                                          "or connect you to existing ones. Don't tell them it will be a new one")
+    else:
+        choice, say = "new", "press Yes, then create the new agent Darwin sets up for you"
     out = {
         "status": "show_user", "url": url, "user_code": user_code, "expires_in": expires_in, "realm": realm, "mode": mode,
-        "key_storage": backend.description,
-        "next": "Show the user the url and user_code now. Then run `pair wait` (re-run it if it returns still_pending; approval can take up to 25 minutes).",
+        "key_storage": backend.description, "choice": choice,
+        "next": "Show the user the url and user_code now, and tell them to check the code and %s. Then run `pair wait` "
+                "(re-run it if it returns still_pending; approval can take up to 25 minutes)." % say,
     }
     hint = cli_hint()
     if hint:

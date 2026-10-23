@@ -101,7 +101,9 @@ skills/darwin-agentic-trading/
 - **You approve every key** in your own signed-in browser on darwin.finance, with your
   passkey (and 2FA if you use it). The agent never sees a password, passkey or seed phrase,
   and the skill tells it to refuse any request for one.
-- **A new pairing creates a new, empty agent account.** Reconnecting an existing agent is a
+- **You choose where a new pairing trades.** Where Darwin offers it, the approval page lets you
+  create a new, empty Agentic Sub-Account or connect the agent to one or all of your existing
+  ones; otherwise it creates a new, empty agent account. Reconnecting an existing agent is a
   separate, explicit mode: the page names the agent and its balance, you confirm with your
   passkey, and Darwin emails you. Other keys keep working until you revoke them on the
   agent's Manage tab.

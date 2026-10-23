@@ -12,7 +12,7 @@ license: MIT
 compatibility: Needs python3 (3.8+) and outbound HTTPS to darwin.finance. Without python3, follow https://darwin.finance/agents/setup.md instead.
 metadata:
   author: Darwin Finance
-  version: "1.3.0"
+  version: "1.3.1"
   homepage: https://darwin.finance/agents/setup
   repository: https://github.com/DarwinFinance/agent-skills
 ---
@@ -122,23 +122,31 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
 - Use **your own app name** as the client name (`Claude Code`, `Claude`, `Codex`,
   `Gemini CLI`, `Cursor`, `Hermes`, …). Darwin refuses names containing "Darwin".
 
-## Pair a new agent (two commands)
+## Pair (two commands)
 
 1. Start:
 
        darwin.py pair start --client-name "<your app name>"
 
-   It returns at once with `url` and `user_code`. **Show both to your user now**,
-   in your own words:
+   It returns at once with `url`, `user_code` and `choice`. **Show the link and the
+   code to your user now**, in your own words, as its `next` says:
 
-   > Open **url** and sign in to Darwin. Check the code on the page is **user_code**,
-   > press **Yes**, then create the new agent Darwin sets up for you.
+   - If `pair start` returned `choice: "new_or_existing"`, your user chooses on Darwin:
+     > Open **url** and sign in to Darwin. Check the code on the page is **user_code**,
+     > press **Yes**, then choose whether to create a new Agentic Sub-Account for me
+     > or connect me to existing ones.
 
-   Pairing creates a **brand-new agent account**, which starts empty until your user
-   funds it. The page marks your client name as unverified; that is expected.
-   Where Darwin offers it, the page may instead let your user connect you to one or all
-   of their **existing** Agentic Sub-Accounts (it asks them to confirm with their passkey,
-   and 2FA if they use it). They choose; you never ask for one or the other.
+     The page offers a new, empty Agentic Sub-Account or one or all of the ones they
+     already have (it asks them to confirm with their passkey, and 2FA if they use it).
+     They choose; never tell them it will be a new one, and never ask for one or the
+     other. The key you receive says what you trade.
+   - If it returned `choice: "new"`, Darwin offers only a new agent:
+     > Open **url** and sign in to Darwin. Check the code on the page is **user_code**,
+     > press **Yes**, then create the new agent Darwin sets up for you.
+
+     That new agent account starts empty until your user funds it.
+
+   The page marks your client name as unverified; that is expected.
 
 2. Wait:
 
