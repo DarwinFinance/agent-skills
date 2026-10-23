@@ -126,13 +126,15 @@ class FakeClock(object):
         self.t += max(0, s)
 
 
-def pair_ok(mode=None, host=PROD):
+def pair_ok(mode=None, host=PROD, credential=None):
     body = {
         "device_code": DEVICE, "user_code": "BCDF-GHJK", "verification_uri": host + "/agents/connect",
         "verification_uri_complete": host + "/agents/connect?code=BCDF-GHJK", "expires_in": 600, "interval": 5,
     }
     if mode:
         body["mode"] = mode
+    if credential is not None:
+        body["credential"] = credential
     return (200, body)
 
 
@@ -240,6 +242,21 @@ class PairStart(Base):
         if os.name != "nt":
             self.assertEqual(os.stat(pending).st_mode & 0o777, 0o600)
             self.assertEqual(os.stat(self.state_dir).st_mode & 0o777, 0o700)
+
+    # Owner beta re-test 2026-10-23: a bot said it would create "a brand-new agent" and the owner then
+    # connected it to an existing one. When Darwin echoes `credential: 2`, the OWNER chooses on Darwin.
+    def test_next_says_the_owner_chooses_when_darwin_offers_existing(self):
+        self.use({("POST", PROD + "/api/agent/v1/pair"): [pair_ok(credential=2)]})
+        code, out = self.run_cli("pair", "start", "--client-name", "Claude Code")
+        self.assertEqual(out["choice"], "new_or_existing")
+        self.assertIn("choose on Darwin whether to create a new Agentic Sub-Account for you or connect you to existing ones", out["next"])
+        self.assertIn("Don't tell them it will be a new one", out["next"])
+        self.assertNotIn("create the new agent", out["next"])
+
+    def test_next_says_new_agent_when_darwin_offers_only_new(self):
+        out = self.start()  # no `credential` echo: an older Darwin, or pairing v2 switched off
+        self.assertEqual(out["choice"], "new")
+        self.assertIn("press Yes, then create the new agent Darwin sets up for you", out["next"])
 
     def test_preflight_failure_starts_nothing(self):
         D._BACKEND_FACTORIES = [BrokenStore]
@@ -1359,6 +1376,12 @@ class SkillDocs(unittest.TestCase):
             "Set up Darwin Agentic Trading using https://darwin.finance/agents/setup.md and save the API key so you can trade later.",
             readme,
         )
+
+    def test_pairing_text_never_promises_a_new_agent(self):
+        text = " ".join(self._docs()["SKILL.md"].split())
+        self.assertNotIn("Pairing creates a **brand-new agent account**", text)
+        self.assertIn("If `pair start` returned `choice: \"new_or_existing\"`", text)
+        self.assertIn("never tell them it will be a new one", text)
 
     def test_after_setup_is_short_and_names_the_agent(self):
         text = " ".join(self._docs()["SKILL.md"].split())
