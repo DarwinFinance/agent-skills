@@ -91,8 +91,9 @@ skills/darwin-agentic-trading/
 |---|---|
 | `pair start --client-name "Claude Code"` | Checks the secret store works, asks Darwin for a pairing code, returns the link and code at once |
 | `pair wait` | Polls until you approve (≤ 8 min per call; re-run it; codes live up to 25 min), stores the key, prints Darwin's welcome |
+| `pair start --read-only --client-name "Claude Code"` | (1.4.0) Asks Darwin for a **read-only** connection: you approve a key that reads market data and your whole account and can never trade. `call` refuses anything that could trade before sending it |
 | `pair reconnect --client-name "Claude Code"` | Same, but gives a **new key to one of your existing agents**, which you pick and confirm in the browser |
-| `import <file>` | Imports a key file you downloaded from Darwin (an agent key from the agent's **Manage** tab, or a version-2 owner key from manual setup), verifies it with Darwin, then deletes the file |
+| `import <file>` | Imports a key file you downloaded from Darwin (an agent key from the agent's **Manage** tab, a version-2 owner key from manual setup, or a Read-Only API Key file), verifies it with Darwin, then deletes the file |
 | `call GET /api/agent/v1/grant` | Calls the Darwin agent API with the stored key (`--as-agent <id>` names another agent for an all-agents key) |
 | `status [--check]` / `forget …` | Lists stored agents / deletes the local copy |
 

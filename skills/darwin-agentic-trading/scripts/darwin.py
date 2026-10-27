@@ -7,6 +7,7 @@ the agent's API key in the operating system's secret store, and adds that key
 to later API calls, so the key never appears in the conversation.
 
     python3 darwin.py pair start --client-name "Claude Code"
+    python3 darwin.py pair start --read-only --client-name "Claude Code"
     python3 darwin.py pair wait
     python3 darwin.py pair reconnect --client-name "Claude Code"
     python3 darwin.py import ~/Downloads/darwin-agent-key-my-agent.json
@@ -47,7 +48,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 # ── Realms ────────────────────────────────────────────────────────────────────
 REALM_HOSTS = {"prod": "darwin.finance", "beta": "beta.darwin.finance"}
@@ -74,6 +75,17 @@ STORED_KEY_RE = re.compile(r"^(?:darwinAI_agents?_|darwinAI_mcp_|agt_)[A-Za-z0-9
 OWNER_ALL_PERMISSIONS_SUFFIX = " · Trade: all active agents"
 # The index entry of an owner key for ALL Agentic Sub-Accounts (it has no single agent of its own).
 ALL_SUB_ACCOUNTS_ID = "all-agentic-sub-accounts"
+# 1.4.0: the index entry of a READ-ONLY owner key (Darwin's `trade: {scope: "none"}`): it reads market data
+# and the whole account, and can never trade. It has no agent of its own either.
+READ_ONLY_ID = "read-only-account"
+# How Darwin's /api/agent/v1/agents describes a read-only owner key.
+OWNER_READ_ONLY_PERMISSIONS_SUFFIX = " · Trade: none"
+# A read-only key's calls: any GET, and the read tools under /api/agent/v1/data/. Everything else could
+# trade, move funds or change an agent, so the helper refuses it before sending (Darwin refuses it too).
+READ_ONLY_POST_RE = re.compile(r"^/api/agent/v1/data/[A-Za-z0-9_-]{1,64}(?:\?.*)?$")
+READ_ONLY_REFUSAL = ("This Darwin connection is read-only: it reads market data and your user's account, but it can't trade, "
+                     "move funds, or create or pair an Agentic Sub-Account. Nothing was sent. If your user wants an AI that "
+                     "trades, they connect one on Darwin's Agents page.")
 DEVICE_CODE_RE = re.compile(r"^darwinAI_pair_[A-Za-z0-9_-]{40,114}$")
 USER_CODE_RE = re.compile(r"^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -275,8 +287,9 @@ def target_for(key, agent_id):
 
 
 def can_name_agent(entry, key):
-    """Whether `--as-agent` may name another agent with this key: an all-agents key, or an owner key for all."""
-    return is_all_agents_key(key) or (entry.get("credential") == "owner_key" and entry.get("scope") == "all")
+    """Whether `--as-agent` may name another agent with this key: an all-agents key, or an owner key for all
+    (or a READ-ONLY owner key, which may name any of its user's agents for reads)."""
+    return is_all_agents_key(key) or (entry.get("credential") == "owner_key" and entry.get("scope") in ("all", "read"))
 
 
 def http(realm, method, path, *, body=None, key=None, host_agent=None, accept_status=None, agent=None):
@@ -999,7 +1012,7 @@ def record_key(state, realm, agent_id, agent_name, backend, host_agent, source, 
         "realm": realm, "agent_id": agent_id, "agent": agent_name, "stored_in": backend.name,
         "host_agent": ua_host(host_agent), "source": source, "stored_at": int(time.time()),
     }
-    if credential == "owner_key" and scope in ("one", "all"):
+    if credential == "owner_key" and scope in ("one", "all", "read"):
         entry["credential"] = "owner_key"
         entry["scope"] = scope
     entries.append(entry)
@@ -1186,6 +1199,7 @@ def cmd_pair_start(args):
     state = State()
     with state.lock():
         backend = choose_backend()  # BEFORE anything is started: the key is handed over once.
+        read_only = bool(getattr(args, "read_only", False))
         body = {"client_name": client}
         if mode == "reconnect":
             body["mode"] = "reconnect"
@@ -1194,6 +1208,9 @@ def cmd_pair_start(args):
             # to one or all of their EXISTING Agentic Sub-Accounts, not only a new one. Darwin decides:
             # it echoes `credential: 2` only when it will offer that, and an older Darwin ignores the field.
             body["credential"] = 2
+            # 1.4.0: it can also hold a READ-ONLY owner key. `only` = your user asked for read-only, so Darwin
+            # offers nothing else; `allowed` = your user may choose read-only on Darwin.
+            body["read_only"] = "only" if read_only else "allowed"
         status, resp = http(realm, "POST", PAIR_PATH, body=body, host_agent=host_agent_name(client))
         if not isinstance(resp, dict):
             resp = {}
@@ -1215,6 +1232,13 @@ def cmd_pair_start(args):
         expected = realm_origin(realm) + "/agents/connect?"
         if not isinstance(url, str) or not url.startswith(expected) or len(url) > 300 or any(c in url for c in " \"'<>\\"):
             raise HelperError("bad_response", "Darwin's pairing link was not on %s; not showing it." % REALM_HOSTS[realm])
+        # 🔴 A read-only request needs Darwin to say EXACTLY that it recorded it (`credential: 2` AND
+        #    `read_only: "only"`): an older Darwin, or one with read-only off, would make a pairing that can
+        #    end in a key that trades. Never retried as anything else; nothing is left pending.
+        if read_only and not (resp.get("credential") == 2 and resp.get("read_only") == "only"):
+            raise HelperError("read_only_unsupported",
+                              "Darwin can't connect you read-only here, so no link is shown. Ask your user to create a "
+                              "Read-Only API Key on Darwin's Agents page and give it to you as a key file (`import`).")
         if mode == "reconnect" and resp.get("mode") != "reconnect":
             # An older server ignores `mode` and would create a NEW agent instead.
             raise HelperError("reconnect_unsupported",
@@ -1236,11 +1260,16 @@ def cmd_pair_start(args):
             "interval": interval, "next_poll_at": now + interval, "created_at": now,
             "hard_expires_at": now + PAIR_MAX_LIFETIME_SECS + 30, "client_name": client, "backend": backend.name,
             "transport_errors": 0, "asked_owner_key": mode == "new",
+            # What Darwin agreed to about read-only: "only", "allowed", or None (it never offers read-only).
+            "read_only": resp.get("read_only") if mode == "new" and resp.get("credential") == 2 and resp.get("read_only") in ("only", "allowed") else None,
         })
     # What the user chooses on the page: Darwin echoes `credential: 2` only when it will offer EXISTING
     # sub-accounts too; otherwise (an older Darwin, or its pairing v2 switched off) only a new one.
     if mode == "reconnect":
         choice, say = "existing", "press Yes, then pick the agent to reconnect"
+    elif read_only:
+        choice, say = "read_only", ("connect you read-only (you will read their account and market data, and never trade). "
+                                    "Don't offer to trade")
     elif resp.get("credential") == 2:
         choice, say = "new_or_existing", ("press Yes, then choose on Darwin whether to create a new Agentic Sub-Account for you "
                                           "or connect you to existing ones. Don't tell them it will be a new one")
@@ -1370,6 +1399,15 @@ def _owner_key_target(p, realm, resp):
     if not p.get("asked_owner_key") or not isinstance(token, str) or not OWNER_KEY_RE.match(token):
         raise bad
     trade = resp.get("trade") if isinstance(resp.get("trade"), dict) else {}
+    # 🔴 READ-ONLY (1.4.0): only where Darwin agreed to read-only at start, and only exactly `{scope: none}`
+    #    with `read_only: true`. A read-only-ONLY pairing accepts NOTHING else (codex review: never a key
+    #    that trades for a user who asked for read-only).
+    if trade.get("scope") == "none":
+        if p.get("read_only") not in ("only", "allowed") or set(trade) != {"scope"} or resp.get("read_only") is not True:
+            raise bad
+        return READ_ONLY_ID, "read"
+    if p.get("read_only") == "only":
+        raise bad
     if trade.get("scope") == "agent":
         agent_id = safe_agent_id(trade.get("agent"))
         if not agent_id:
@@ -1406,6 +1444,8 @@ def _finish_owner_key(state, p, realm, backend, host, resp):
     state.clear_pending()
     out = {"status": "paired", "agent_id": agent_id, "realm": realm, "mode": p.get("mode", "new"), "credential": "owner_key",
            "stored_in": backend.description, "key_name": key_name}
+    if scope == "read":
+        return _emit_read_only(out, realm, token, host)
     if scope == "all":
         out["all_agents"] = True
         out["all_agents_note"] = OWNER_ALL_NOTE
@@ -1426,11 +1466,38 @@ def _finish_owner_key(state, p, realm, backend, host, resp):
     return 0
 
 
+READ_ONLY_NOTE = ("This key is READ-ONLY: it reads Darwin market data and your user's whole account (holdings, positions, "
+                  "orders, history, watchlists and alerts) with `call GET …` and `call POST /api/agent/v1/data/<tool>`. It can't "
+                  "trade, move funds, or create or pair an Agentic Sub-Account: the helper refuses those calls, and so does Darwin. "
+                  "Never offer to trade. Your user revokes it on Darwin's Agents page.")
+
+
+def _emit_read_only(out, realm, token, host):
+    """The read-only key is stored: say hello with NO agent (Darwin answers the account-level read-only welcome)."""
+    welcome, _agent, _address, hello_err = say_hello(realm, token, host, None)
+    out["read_only"] = True
+    out["read_only_note"] = READ_ONLY_NOTE
+    out["welcome"] = welcome
+    out["next"] = ("%s %s Then read %s/agents/docs/llms.txt for the read routes." % (
+        SHOW_WELCOME if welcome is not None else "Tell your user, in one short sentence, that you are connected to their Darwin account read-only.",
+        AFTER_SETUP, realm_origin(realm))).strip()
+    if hello_err:
+        out["hello_error"] = hello_err
+    emit(out)
+    return 0
+
+
 def _finish_pairing(state, p, realm, backend, host, resp):
     """The key is in memory only. The pending file (marked in_flight) is kept until the key
     is durably stored, so a crash here is reported as `lost` by the next `pair wait`."""
     if resp.get("credential") == "owner_key":
         return _finish_owner_key(state, p, realm, backend, host, resp)
+    if p.get("read_only") == "only":
+        # 🔴 A user who asked for read-only is never handed an agent key (which trades). Nothing is stored.
+        state.clear_pending()
+        raise HelperError("bad_response", "Darwin answered a read-only pairing with a key that can trade; nothing was stored. "
+                          "Ask your user to revoke the key named \"%s\" on Darwin, then connect again." % (
+                              safe_text(resp.get("key_name"), 80) or "Paired: %s" % p.get("client_name", "agent")))
     token = resp.get("access_token")
     if isinstance(token, str):
         remember_secret(token)
@@ -1585,6 +1652,9 @@ def _parse_key_file(raw):
         return HOST_TO_REALM[realm_host], agent_id, key, "one"
     if trade.get("scope") == "all_active" and set(trade) == {"scope"} and "agent_id" not in data:
         return HOST_TO_REALM[realm_host], ALL_SUB_ACCOUNTS_ID, key, "all"
+    # 1.4.0: a READ-ONLY owner key (Darwin's Read-Only API Key file): exactly `{scope: none}`, no agent.
+    if trade.get("scope") == "none" and set(trade) == {"scope"} and "agent_id" not in data:
+        return HOST_TO_REALM[realm_host], READ_ONLY_ID, key, "read"
     raise HelperError("key_file_invalid", "The key file's trade scope is not one this helper knows.")
 
 
@@ -1609,6 +1679,8 @@ def _import(args, kf):
     state = State()
     if scope == "all":
         return _import_owner_all(args, kf, state, realm, key, host)
+    if scope == "read":
+        return _import_owner_read(args, kf, state, realm, key, host)
     with state.lock():
         backend = choose_backend()
         status, body = http(realm, "GET", GRANT_PATH, key=key, host_agent=host, agent=target_for(key, agent_id))
@@ -1695,6 +1767,40 @@ def _import_owner_all(args, kf, state, realm, key, host):
     return 0
 
 
+def _import_owner_read(args, kf, state, realm, key, host):
+    """A version-2 READ-ONLY owner key: Darwin's own agents list must say it trades NOTHING (the file is
+    unsigned), then it is stored under the read-only entry and greeted with the account-level welcome."""
+    with state.lock():
+        backend = choose_backend()
+        status, body = http(realm, "GET", "/api/agent/v1/agents", key=key, host_agent=host)
+        if status in (401, 403):
+            raise HelperError("key_rejected", "Darwin did not accept this key (revoked). Nothing was stored.", http_status=status)
+        if status != 200 or not isinstance(body, dict):
+            raise HelperError("key_check_failed", "Could not verify the key (HTTP %d). Nothing was stored." % status, http_status=status)
+        perms = body.get("permissions")
+        if not isinstance(perms, str) or not perms.endswith(OWNER_READ_ONLY_PERMISSIONS_SUFFIX) or "whole account" not in perms:
+            raise HelperError("scope_mismatch", "Darwin says this key is not read-only, so the key file is wrong. "
+                              "Nothing was stored; the key file was kept.")
+        try:
+            store_key(backend, realm, READ_ONLY_ID, key)
+        except Exception as e:
+            raise HelperError("store_failed", "Could not store the key in %s (%s). Nothing was imported; the key file was kept." % (backend.description, redact(str(e))[:80]))
+        record_key(state, realm, READ_ONLY_ID, None, backend, host, "key_file", credential="owner_key", scope="read")
+    deleted, detail = _delete_detail(args, kf)
+    out = {"status": "imported", "agent_id": READ_ONLY_ID, "realm": realm, "stored_in": backend.description,
+           "credential": "owner_key", "key_file_deleted": deleted, "detail": detail}
+    return _emit_read_only(out, realm, key, host)
+
+
+def is_read_only_entry(entry):
+    return entry.get("credential") == "owner_key" and entry.get("scope") == "read"
+
+
+def read_only_allows(method, path):
+    """What a read-only key may send: any GET, and POST to a read tool under /api/agent/v1/data/."""
+    return method == "GET" or (method == "POST" and READ_ONLY_POST_RE.match(path) is not None)
+
+
 _METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
 
@@ -1722,6 +1828,9 @@ def cmd_call(args):
         raise HelperError("invalid_body", "A GET has no body.")
     state = State()
     entry = select_entry(state, parse_realm(args.realm), args.agent_id)
+    # 🔴 1.4.0: a READ-ONLY key never sends anything that could trade (Darwin refuses it anyway).
+    if is_read_only_entry(entry) and not read_only_allows(method, path):
+        raise HelperError("read_only", READ_ONLY_REFUSAL)
     key = load_key(entry)
     target = target_for(key, entry["agent_id"])
     if args.as_agent is not None:
@@ -1753,11 +1862,13 @@ def cmd_status(args):
     for e in entries:
         item = {"realm": e["realm"], "agent_id": e["agent_id"], "agent": e.get("agent"), "stored_in": e.get("stored_in"),
                 "source": e.get("source"), "stored_at": e.get("stored_at")}
+        if is_read_only_entry(e):
+            item["read_only"] = True
         if args.check:
             try:
                 key = load_key(e)
                 # An owner key for ALL sub-accounts has no agent of its own: its check is the agents list.
-                path = "/api/agent/v1/agents" if e.get("credential") == "owner_key" and e.get("scope") == "all" else GRANT_PATH
+                path = "/api/agent/v1/agents" if e.get("credential") == "owner_key" and e.get("scope") in ("all", "read") else GRANT_PATH
                 code, _ = http(e["realm"], "GET", path, key=key, host_agent=host_agent_name(e.get("host_agent")),
                                agent=target_for(key, e["agent_id"]))
                 item["check"] = "ok" if code == 200 else ("rejected" if code in (401, 403) else "http_%d" % code)
@@ -1823,6 +1934,7 @@ def build_parser():
         s.add_argument("--realm", default="prod", help="prod (darwin.finance, default) or beta")
         if name == "start":
             s.add_argument("--reconnect", action="store_true", help="give a new key to one of your user's EXISTING agents")
+            s.add_argument("--read-only", action="store_true", help="your user asked for a READ-ONLY connection (reads, never trades)")
     w = psub.add_parser("wait")
     w.add_argument("--max-seconds", default=DEFAULT_WAIT_SECS, type=int)
 
@@ -1870,6 +1982,8 @@ def main(argv=None):
     try:
         if args.cmd == "pair":
             if args.pair_cmd == "start":
+                if getattr(args, "read_only", False) and args.reconnect:
+                    raise HelperError("invalid_arguments", "--read-only and --reconnect do not mix: a reconnect re-keys an Agentic Sub-Account.")
                 return cmd_pair_start(args)
             if args.pair_cmd == "reconnect":
                 args.reconnect = True

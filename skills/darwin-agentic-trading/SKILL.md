@@ -12,7 +12,7 @@ license: MIT
 compatibility: Needs python3 (3.8+) and outbound HTTPS to darwin.finance. Without python3, follow https://darwin.finance/agents/setup.md instead.
 metadata:
   author: Darwin Finance
-  version: "1.3.1"
+  version: "1.4.0"
   homepage: https://darwin.finance/agents/setup
   repository: https://github.com/DarwinFinance/agent-skills
 ---
@@ -34,9 +34,9 @@ Darwin's market data. The canonical human guide is https://darwin.finance/agents
 - **Running code** (Claude Code, Codex, Cursor, Gemini CLI, Hermes, OpenClaw, a script
   or a server): pair with this skill, as below. If you can run commands, the Darwin CLI
   is an alternative (see **The Darwin CLI**).
-- **To read your user's whole account** (portfolio, perps, earn, all agents): that is a
-  separate API key your user creates on the MCP page, never this setup. An agent key
-  does not work on Darwin's MCP server.
+- **To read your user's whole account** (portfolio, perps, earn, all agents): pair with
+  `--read-only` (see **Read-only**), or import the Read-Only API Key file your user
+  creates on Darwin. An agent key does not work on Darwin's MCP server.
 
 The helper `scripts/darwin.py` in this skill's folder does the pairing, keeps the key
 in the operating system's secret store, and adds the key to your API calls, so the key
@@ -200,6 +200,27 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
    (no key needed): tokenized stocks trade 24/7, but liquidity is much lower outside the
    US regular session, and agent stock orders are accepted 9:30am–3:55pm New York time.
 
+## Read-only (1.4.0)
+
+If your user asks for a **read-only** connection ("connect Darwin read-only", "research only",
+"don't let it trade"), pair with:
+
+    darwin.py pair start --read-only --client-name "<your app name>"
+
+then `darwin.py pair wait` as above. Darwin then offers your user only a read-only connection. If
+`pair start` returns `read_only_unsupported`, Darwin can't do read-only pairing here: tell your
+user, and suggest they create a **Read-Only API Key** on Darwin's Agents page and give it to you as a
+key file (`darwin.py import`). Never retry without `--read-only`.
+
+A read-only key (`read_only: true`) reads Darwin's market data and your user's whole account
+(holdings, positions, orders, history, watchlists and alerts). It **can't trade, move funds, or create
+or pair an Agentic Sub-Account**: `darwin.py call` refuses any call that could, before sending it
+(error `read_only`), and Darwin refuses it too. Never offer to trade with it. After `pair wait`, show
+the `welcome` verbatim (it is an account-level read-only welcome, with no agent and no address).
+Then use `darwin.py call GET …` and `darwin.py call POST /api/agent/v1/data/<tool> '<json>'` for reads.
+Without `--read-only`, your user may still choose read-only on Darwin; the helper handles that the
+same way. Your user revokes a read-only key on Darwin's Agents page.
+
 ## Reconnect an existing agent
 
 When your user wants you to keep trading an agent they **already have** (for example
@@ -217,7 +238,8 @@ reconnected. If the helper returns `reconnect_unsupported`, use a key file inste
 ## Import a key file
 
 Your user can create a key on the agent's **Manage** tab, or by setting one up
-manually on Darwin, and press **Download key file**. Then:
+manually on Darwin, or create a **Read-Only API Key** on Darwin's Agents page, and press
+**Download key file**. Then:
 
     darwin.py import <path to the downloaded .json file>
 
