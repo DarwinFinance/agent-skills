@@ -140,6 +140,12 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
      already have (it asks them to confirm with their passkey, and 2FA if they use it).
      They choose; never tell them it will be a new one, and never ask for one or the
      other. The key you receive says what you trade.
+   - If it returned `choice: "new_existing_or_read_only"`, it is the same, and Darwin also
+     offers your user a **read-only** connection (see **Read-only**): say "choose on Darwin
+     whether to create a new Agentic Sub-Account for me, connect me to existing ones, or
+     connect me read-only".
+   - If it returned `choice: "read_only"` (you ran `--read-only`), Darwin offers only a
+     read-only connection: tell your user to press Yes and connect you read-only.
    - If it returned `choice: "new"`, Darwin offers only a new agent:
      > Open **url** and sign in to Darwin. Check the code on the page is **user_code**,
      > press **Yes**, then create the new agent Darwin sets up for you.
@@ -164,6 +170,9 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
    Darwin's MCP page.
 
 ## After pairing
+
+If `pair wait` returned `read_only: true`, follow **Read-only** instead: there is no agent,
+no address and no agent page, and you never trade.
 
 1. Show the `welcome` field to your user **verbatim, before anything else**. It starts
    with the new agent's Solana address, alone in a code block:

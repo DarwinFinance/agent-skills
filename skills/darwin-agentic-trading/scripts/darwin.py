@@ -1236,6 +1236,9 @@ def cmd_pair_start(args):
         #    `read_only: "only"`): an older Darwin, or one with read-only off, would make a pairing that can
         #    end in a key that trades. Never retried as anything else; nothing is left pending.
         if read_only and not (resp.get("credential") == 2 and resp.get("read_only") == "only"):
+            # An older pairing still waiting here could be redeemed by the next `pair wait` and store a key
+            # that trades, against this read-only request (codex 1.4.0 r1 P1): it is dropped too.
+            state.clear_pending()
             raise HelperError("read_only_unsupported",
                               "Darwin can't connect you read-only here, so no link is shown. Ask your user to create a "
                               "Read-Only API Key on Darwin's Agents page and give it to you as a key file (`import`).")
@@ -1270,6 +1273,10 @@ def cmd_pair_start(args):
     elif read_only:
         choice, say = "read_only", ("connect you read-only (you will read their account and market data, and never trade). "
                                     "Don't offer to trade")
+    elif resp.get("credential") == 2 and resp.get("read_only") == "allowed":
+        choice, say = "new_existing_or_read_only", ("press Yes, then choose on Darwin whether to create a new Agentic Sub-Account for "
+                                                    "you, connect you to existing ones, or connect you read-only. Don't tell them "
+                                                    "which it will be")
     elif resp.get("credential") == 2:
         choice, say = "new_or_existing", ("press Yes, then choose on Darwin whether to create a new Agentic Sub-Account for you "
                                           "or connect you to existing ones. Don't tell them it will be a new one")
@@ -1490,6 +1497,9 @@ def _emit_read_only(out, realm, token, host):
 def _finish_pairing(state, p, realm, backend, host, resp):
     """The key is in memory only. The pending file (marked in_flight) is kept until the key
     is durably stored, so a crash here is reported as `lost` by the next `pair wait`."""
+    # Registered FIRST, so no refusal below can ever print it (codex 1.4.0 r1 P2).
+    if isinstance(resp.get("access_token"), str):
+        remember_secret(resp.get("access_token"))
     if resp.get("credential") == "owner_key":
         return _finish_owner_key(state, p, realm, backend, host, resp)
     if p.get("read_only") == "only":
@@ -1778,7 +1788,7 @@ def _import_owner_read(args, kf, state, realm, key, host):
         if status != 200 or not isinstance(body, dict):
             raise HelperError("key_check_failed", "Could not verify the key (HTTP %d). Nothing was stored." % status, http_status=status)
         perms = body.get("permissions")
-        if not isinstance(perms, str) or not perms.endswith(OWNER_READ_ONLY_PERMISSIONS_SUFFIX) or "whole account" not in perms:
+        if not isinstance(perms, str) or not perms.endswith(OWNER_READ_ONLY_PERMISSIONS_SUFFIX):
             raise HelperError("scope_mismatch", "Darwin says this key is not read-only, so the key file is wrong. "
                               "Nothing was stored; the key file was kept.")
         try:

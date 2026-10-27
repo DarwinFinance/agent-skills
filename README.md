@@ -31,6 +31,11 @@ something like *"set up a Darwin agent"* or *"agentic trading on Darwin"*:
    limits. Every key also reads all of Darwin's market data. The helper keeps the key in
    your operating system's secret store, so it never appears in the chat.
 
+**Read-only (1.4.0):** say *"connect Darwin read-only"* and the agent asks Darwin for a read-only
+connection instead: it reads market data and your whole account, and can never trade, move money,
+or create or pair an Agentic Sub-Account. You can also choose read-only on Darwin's approval page
+for an ordinary pairing.
+
 **No withdrawals:** the agent can never send funds out of its Darwin account, and no Darwin
 credential can move funds between your accounts; moving perps margin between the agent's
 own wallet and its own perps account is allowed. Funding and withdrawals stay with you, in

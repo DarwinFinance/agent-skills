@@ -1315,9 +1315,6 @@ class ImportOwnerKeyFile(Base):
         self.assertEqual((realm, agent_id, key, scope), ("prod", GRANT, KEY, None))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class KeyFileFieldTypes(unittest.TestCase):
     """Codex (server review) P3: JSON true / 1.0 equal 1 in Python but are not version 1."""
@@ -1614,4 +1611,42 @@ class ImportReadOnlyKeyFile(Base):
             self.use({})
             code, out = self.run_cli("import", path)
             self.assertEqual(out["error"], "key_file_invalid", over)
+
+    def test_import_needs_only_darwins_trade_none_suffix(self):
+        path = self.keyfile()
+        self.use({self.AGENTS_URL: [(200, {"permissions": "Read: account · Trade: none", "agents": []})], self.HELLO_URL: [READ_ONLY_HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+
+
+class ReadOnlyHardening(Base):
+    PAIR = ("POST", PROD + "/api/agent/v1/pair")
+    TOKEN = ("POST", PROD + "/api/agent/v1/pair/token")
+
+    def test_a_refused_read_only_start_drops_an_older_waiting_pairing(self):
+        # An earlier ordinary pairing is waiting; the read-only request is refused by Darwin…
+        self.start()
+        self.assertIsNotNone(D.State().pending())
+        self.use({self.PAIR: [pair_ok(credential=2)]})
+        code, out = self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+        self.assertEqual(out["error"], "read_only_unsupported")
+        # …so nothing is left that `pair wait` could redeem into a key that trades.
+        self.assertIsNone(D.State().pending())
+        self.use({self.TOKEN: [owner_token_ok()]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "no_pending")
+        self.assertEqual(FakeStore.data, {})
+
+    def test_a_refused_pickup_never_prints_the_token_even_when_echoed_elsewhere(self):
+        self.use({self.PAIR: [pair_ok(credential=2, read_only="only")]})
+        self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+        opaque = "zzOPAQUEsecretvalue1234567890"
+        self.use({self.TOKEN: [(200, {"access_token": opaque, "key_name": "leak " + opaque})]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "bad_response")
+        self.assertNotIn(opaque, self.outputs[-1][0])
+
+
+if __name__ == "__main__":
+    unittest.main()
 
