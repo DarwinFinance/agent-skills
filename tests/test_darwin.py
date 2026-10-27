@@ -1637,6 +1637,14 @@ class ReadOnlyHardening(Base):
         self.assertEqual(out["error"], "no_pending")
         self.assertEqual(FakeStore.data, {})
 
+    def test_a_failed_read_only_start_drops_an_older_waiting_pairing_whatever_darwin_answers(self):
+        for answer in ((400, {"error": "invalid_request"}), (429, {"error": "rate_limited"}), (200, {"nope": 1})):
+            self.start()
+            self.use({self.PAIR: [answer]})
+            code, out = self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+            self.assertIn("error", out, answer)
+            self.assertIsNone(D.State().pending(), answer)
+
     def test_a_refused_pickup_never_prints_the_token_even_when_echoed_elsewhere(self):
         self.use({self.PAIR: [pair_ok(credential=2, read_only="only")]})
         self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
@@ -1649,4 +1657,3 @@ class ReadOnlyHardening(Base):
 
 if __name__ == "__main__":
     unittest.main()
-

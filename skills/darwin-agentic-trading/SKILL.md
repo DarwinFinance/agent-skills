@@ -219,7 +219,8 @@ If your user asks for a **read-only** connection ("connect Darwin read-only", "r
 then `darwin.py pair wait` as above. Darwin then offers your user only a read-only connection. If
 `pair start` returns `read_only_unsupported`, Darwin can't do read-only pairing here: tell your
 user, and suggest they create a **Read-Only API Key** on Darwin's Agents page and give it to you as a
-key file (`darwin.py import`). Never retry without `--read-only`.
+key file (**Download Key File for the Darwin Skill** in the window that shows the key;
+then `darwin.py import`). Never retry without `--read-only`.
 
 A read-only key (`read_only: true`) reads Darwin's market data and your user's whole account
 (holdings, positions, orders, history, watchlists and alerts). It **can't trade, move funds, or create
@@ -247,8 +248,8 @@ reconnected. If the helper returns `reconnect_unsupported`, use a key file inste
 ## Import a key file
 
 Your user can create a key on the agent's **Manage** tab, or by setting one up
-manually on Darwin, or create a **Read-Only API Key** on Darwin's Agents page, and press
-**Download key file**. Then:
+manually on Darwin, and press **Download key file**. For a **Read-Only API Key** (made on
+Darwin's Agents page), it is **Download Key File for the Darwin Skill**. Then:
 
     darwin.py import <path to the downloaded .json file>
 

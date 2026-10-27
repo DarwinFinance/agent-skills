@@ -1200,6 +1200,11 @@ def cmd_pair_start(args):
     with state.lock():
         backend = choose_backend()  # BEFORE anything is started: the key is handed over once.
         read_only = bool(getattr(args, "read_only", False))
+        if read_only:
+            # 🔴 BEFORE anything is sent (codex 1.4.0 r2 P1): a read-only request retires any older pairing
+            # still waiting here, whatever Darwin then answers (an error, a refusal, a timeout), so the next
+            # `pair wait` can never redeem it into a key that trades.
+            state.clear_pending()
         body = {"client_name": client}
         if mode == "reconnect":
             body["mode"] = "reconnect"
