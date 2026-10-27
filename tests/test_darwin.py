@@ -126,7 +126,7 @@ class FakeClock(object):
         self.t += max(0, s)
 
 
-def pair_ok(mode=None, host=PROD, credential=None):
+def pair_ok(mode=None, host=PROD, credential=None, read_only=None):
     body = {
         "device_code": DEVICE, "user_code": "BCDF-GHJK", "verification_uri": host + "/agents/connect",
         "verification_uri_complete": host + "/agents/connect?code=BCDF-GHJK", "expires_in": 600, "interval": 5,
@@ -135,7 +135,20 @@ def pair_ok(mode=None, host=PROD, credential=None):
         body["mode"] = mode
     if credential is not None:
         body["credential"] = credential
+    if read_only is not None:
+        body["read_only"] = read_only
     return (200, body)
+
+
+def read_only_token_ok(key=OWNER_KEY):
+    return (200, {"access_token": key, "token_type": "Bearer", "credential": "owner_key", "key_name": "Paired: Claude Code",
+                  "mode": "new", "permissions": "Read: all Darwin market data, plus your whole account · Trade: none",
+                  "trade": {"scope": "none"}, "read_only": True, "all_agents": False,
+                  "message": "I'm connected to your Darwin account, read-only.", "instructions": "…", "next": "GET /api/agent/v1/hello"})
+
+
+READ_ONLY_HELLO = (200, {"welcome": "Welcome to Darwin! This is a read-only connection to your Darwin account.", "ok": True, "read_only": True})
+RO_PERMS = "Read: all Darwin market data, plus your whole account · Trade: none"
 
 
 ADDR = "3FqARyyLHpV6rbwRbVW3hVTz8vrK49wBWPV4hHAGDzoD"
@@ -235,7 +248,8 @@ class PairStart(Base):
         req = self.opener.requests[0]
         # A NEW pairing says it can hold an owner key (`credential: 2`, Darwin's pairing v2). Darwin
         # records it only while its pairing v2 switch is on, and an older Darwin ignores the field.
-        self.assertEqual(req["body"], {"client_name": "Claude Code", "credential": 2})
+        # 1.4.0: it can also hold a READ-ONLY owner key, so the owner may choose read-only on Darwin.
+        self.assertEqual(req["body"], {"client_name": "Claude Code", "credential": 2, "read_only": "allowed"})
         self.assertTrue(req["headers"]["User-agent"].startswith("darwin-agent-skill/%s (Claude Code)" % D.__version__))
         self.assertEqual(req["headers"]["X-darwin-client"], "claude; harness=darwin-agent-skill; version=%s" % D.__version__)
         pending = os.path.join(self.state_dir, "pending.json")
@@ -1280,7 +1294,10 @@ class ImportOwnerKeyFile(Base):
             self.one(trade="agent"),
             self.all(agent_id=GRANT),                           # an all-sub-accounts file carries no agent_id
             self.all(trade={"scope": "all_active", "agent": GRANT}),
-            self.all(trade={"scope": "none"}),
+            # 1.4.0 accepts `{scope: none}` (read-only) — but never with an agent, or with extra fields.
+            self.all(trade={"scope": "none"}, agent_id=GRANT),
+            self.all(trade={"scope": "none", "extra": 1}),
+            self.all(trade={"scope": "read_only"}),
             self.one(version=3),
             self.one(realm="evil.example"),
         ]
@@ -1297,9 +1314,6 @@ class ImportOwnerKeyFile(Base):
             {"type": "darwin-agent-key", "version": 1, "realm": "darwin.finance", "agent_id": GRANT, "key": KEY}).encode("utf-8"))
         self.assertEqual((realm, agent_id, key, scope), ("prod", GRANT, KEY, None))
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class KeyFileFieldTypes(unittest.TestCase):
@@ -1451,3 +1465,195 @@ class SkillDocs(unittest.TestCase):
         self.assertTrue(D.RamFileStore.description.startswith("memory only"))
         for cls in (D.MacKeychain, D.WindowsCredentials, D.LinuxSecretTool):
             self.assertFalse(cls.description.startswith("memory only"))
+
+
+# ── READ-ONLY (1.4.0; Darwin's read-only pairing, owner 2026-10-27) ──────────────────────────────
+class ReadOnlyPairing(Base):
+    PAIR = ("POST", PROD + "/api/agent/v1/pair")
+    TOKEN = ("POST", PROD + "/api/agent/v1/pair/token")
+    HELLO_KEY = ("GET", PROD + "/api/agent/v1/hello")
+
+    def start_ro(self, echo=("only", 2)):
+        ro, cred = echo
+        self.use({self.PAIR: [pair_ok(credential=cred, read_only=ro)]})
+        return self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+
+    def test_read_only_start_asks_for_only_and_shows_the_link_when_darwin_echoes_both(self):
+        code, out = self.start_ro()
+        self.assertEqual(self.opener.requests[0]["body"], {"client_name": "Claude Code", "credential": 2, "read_only": "only"})
+        self.assertEqual(out["status"], "show_user", out)
+        self.assertEqual(out["choice"], "read_only")
+        self.assertIn("read-only", out["next"])
+
+    def test_read_only_start_stops_unless_darwin_echoes_exactly_only_and_credential_2(self):
+        # An older Darwin (no echo), a downgraded echo ("allowed"), or no credential: no link, nothing pending.
+        for echo in ((None, None), ("allowed", 2), ("only", None), (None, 2)):
+            code, out = self.start_ro(echo)
+            self.assertEqual(out.get("error"), "read_only_unsupported", (echo, out))
+            self.assertNotIn("url", out)
+            self.assertIsNone(D.State().pending(), echo)
+
+    def test_read_only_and_reconnect_do_not_mix(self):
+        self.use({})
+        code, out = self.run_cli("pair", "start", "--read-only", "--reconnect", "--client-name", "Claude Code")
+        self.assertEqual(out["error"], "invalid_arguments")
+        self.assertEqual(self.opener.requests, [])
+
+    def test_read_only_key_is_stored_as_read_only_and_greeted_without_an_agent(self):
+        self.start_ro()
+        op = self.use({self.TOKEN: [read_only_token_ok()], self.HELLO_KEY: [READ_ONLY_HELLO]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertTrue(out["read_only"])
+        self.assertEqual(out["agent_id"], D.READ_ONLY_ID)
+        self.assertIn("read-only", out["welcome"])
+        self.assertEqual(FakeStore.data["darwin.finance:" + D.READ_ONLY_ID], OWNER_KEY)
+        hello = [r for r in op.requests if r["url"].endswith("/hello")][0]
+        self.assertNotIn("X-darwin-agent", hello["headers"])
+        entry = D.State().index()[0]
+        self.assertEqual((entry["credential"], entry["scope"]), ("owner_key", "read"))
+
+    def test_an_allowed_pairing_may_end_read_only_when_the_owner_chose_it(self):
+        self.use({self.PAIR: [pair_ok(credential=2, read_only="allowed")]})
+        self.run_cli("pair", "start", "--client-name", "Claude Code")
+        self.use({self.TOKEN: [read_only_token_ok()], self.HELLO_KEY: [READ_ONLY_HELLO]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["status"], "paired", out)
+        self.assertTrue(out["read_only"])
+
+    def test_a_read_only_key_is_refused_when_darwin_never_agreed_to_read_only(self):
+        self.use({self.PAIR: [pair_ok(credential=2)]})  # no read_only echo
+        self.run_cli("pair", "start", "--client-name", "Claude Code")
+        self.use({self.TOKEN: [read_only_token_ok()]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "bad_response")
+        self.assertEqual(FakeStore.data, {})
+
+    def test_a_read_only_only_pairing_refuses_any_key_that_can_trade(self):
+        for answer in (owner_token_ok(), owner_token_ok(scope="all_active"), token_ok(),
+                       (200, dict(read_only_token_ok()[1], read_only=False)),
+                       (200, dict(read_only_token_ok()[1], trade={"scope": "all_active"}))):
+            self.start_ro()
+            self.use({self.TOKEN: [answer]})
+            code, out = self.run_cli("pair", "wait")
+            self.assertEqual(out.get("error"), "bad_response", answer)
+            self.assertEqual(FakeStore.data, {}, answer)
+
+
+class ReadOnlyCall(Base):
+    def stored(self):
+        FakeStore.data["darwin.finance:" + D.READ_ONLY_ID] = OWNER_KEY
+        D.record_key(D.State(), "prod", D.READ_ONLY_ID, None, FakeStore(), "Claude Code", "pairing", credential="owner_key", scope="read")
+
+    def test_reads_go_through(self):
+        self.stored()
+        op = self.use({("GET", PROD + "/api/agent/v1/agents"): [(200, {"ok": True})],
+                       ("POST", PROD + "/api/agent/v1/data/get_portfolio"): [(200, {"ok": True})]})
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/agents")
+        self.assertTrue(out["ok"])
+        code, out = self.run_cli("call", "POST", "/api/agent/v1/data/get_portfolio", "{}")
+        self.assertTrue(out["ok"])
+        self.assertEqual(op.requests[1]["headers"]["Authorization"], "Bearer " + OWNER_KEY)
+
+    def test_anything_that_could_trade_is_refused_locally_with_a_clear_message(self):
+        self.stored()
+        op = self.use({})
+        for method, path in (("POST", "/api/agent/v1/orders"), ("POST", "/api/agent/v1/tx/submit"), ("DELETE", "/api/agent/v1/orders/x"),
+                             ("POST", "/api/agent/v1/perps/orders"), ("POST", "/api/agent/v1/pause")):
+            code, out = self.run_cli("call", method, path, "{}" if method != "DELETE" else None) if method != "DELETE" else self.run_cli("call", method, path)
+            self.assertEqual(out.get("error"), "read_only", (method, path, out))
+            self.assertIn("read-only", out["detail"])
+        self.assertEqual(op.requests, [])
+
+    def test_status_check_uses_the_agents_list(self):
+        self.stored()
+        op = self.use({("GET", PROD + "/api/agent/v1/agents"): [(200, {"ok": True})]})
+        code, out = self.run_cli("status", "--check")
+        self.assertEqual(out["keys"][0]["check"], "ok")
+        self.assertTrue(out["keys"][0]["read_only"])
+
+
+class ImportReadOnlyKeyFile(Base):
+    AGENTS_URL = ("GET", PROD + "/api/agent/v1/agents")
+    HELLO_URL = ("GET", PROD + "/api/agent/v1/hello")
+
+    def keyfile(self, **over):
+        d = {"type": "darwin-agent-key", "version": 2, "realm": "darwin.finance", "credential": "owner_key",
+             "trade": {"scope": "none"}, "key": OWNER_KEY}
+        d.update(over)
+        path = os.path.join(self.tmp, "darwin-ai-key-read-only.json")
+        with open(path, "w") as f:
+            json.dump(d, f)
+        return path
+
+    def test_read_only_file_is_checked_with_darwin_then_stored_read_only(self):
+        path = self.keyfile()
+        op = self.use({self.AGENTS_URL: [(200, {"permissions": RO_PERMS, "agents": []})], self.HELLO_URL: [READ_ONLY_HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+        self.assertTrue(out["read_only"])
+        self.assertIn("read-only", out["welcome"])
+        self.assertEqual(FakeStore.data["darwin.finance:" + D.READ_ONLY_ID], OWNER_KEY)
+        self.assertEqual(D.State().index()[0]["scope"], "read")
+        self.assertFalse(os.path.exists(path))
+
+    def test_a_file_that_says_read_only_for_a_key_that_trades_stores_nothing(self):
+        path = self.keyfile()
+        self.use({self.AGENTS_URL: [(200, {"permissions": ALL_PERMS, "agents": []})]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["error"], "scope_mismatch")
+        self.assertEqual(FakeStore.data, {})
+        self.assertTrue(os.path.exists(path))
+
+    def test_malformed_read_only_files_are_refused(self):
+        for over in ({"agent_id": GRANT}, {"trade": {"scope": "none", "agent": GRANT}}):
+            path = self.keyfile(**over)
+            self.use({})
+            code, out = self.run_cli("import", path)
+            self.assertEqual(out["error"], "key_file_invalid", over)
+
+    def test_import_needs_only_darwins_trade_none_suffix(self):
+        path = self.keyfile()
+        self.use({self.AGENTS_URL: [(200, {"permissions": "Read: account · Trade: none", "agents": []})], self.HELLO_URL: [READ_ONLY_HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+
+
+class ReadOnlyHardening(Base):
+    PAIR = ("POST", PROD + "/api/agent/v1/pair")
+    TOKEN = ("POST", PROD + "/api/agent/v1/pair/token")
+
+    def test_a_refused_read_only_start_drops_an_older_waiting_pairing(self):
+        # An earlier ordinary pairing is waiting; the read-only request is refused by Darwin…
+        self.start()
+        self.assertIsNotNone(D.State().pending())
+        self.use({self.PAIR: [pair_ok(credential=2)]})
+        code, out = self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+        self.assertEqual(out["error"], "read_only_unsupported")
+        # …so nothing is left that `pair wait` could redeem into a key that trades.
+        self.assertIsNone(D.State().pending())
+        self.use({self.TOKEN: [owner_token_ok()]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "no_pending")
+        self.assertEqual(FakeStore.data, {})
+
+    def test_a_failed_read_only_start_drops_an_older_waiting_pairing_whatever_darwin_answers(self):
+        for answer in ((400, {"error": "invalid_request"}), (429, {"error": "rate_limited"}), (200, {"nope": 1})):
+            self.start()
+            self.use({self.PAIR: [answer]})
+            code, out = self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+            self.assertIn("error", out, answer)
+            self.assertIsNone(D.State().pending(), answer)
+
+    def test_a_refused_pickup_never_prints_the_token_even_when_echoed_elsewhere(self):
+        self.use({self.PAIR: [pair_ok(credential=2, read_only="only")]})
+        self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+        opaque = "zzOPAQUEsecretvalue1234567890"
+        self.use({self.TOKEN: [(200, {"access_token": opaque, "key_name": "leak " + opaque})]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "bad_response")
+        self.assertNotIn(opaque, self.outputs[-1][0])
+
+
+if __name__ == "__main__":
+    unittest.main()
