@@ -10,7 +10,7 @@
       "name": "darwin",
       "source": "./",
       "description": "Set up a Darwin agent for agentic trading on Darwin Finance (darwin.finance): pair, reconnect or import a key file, then trade within limits your user sets.",
-      "version": "1.4.0"
+      "version": "1.4.1"
     }
   ]
 }

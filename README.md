@@ -98,7 +98,7 @@ skills/darwin-agentic-trading/
 | `pair wait` | Polls until you approve (≤ 8 min per call; re-run it; codes live up to 25 min), stores the key, prints Darwin's welcome |
 | `pair start --read-only --client-name "Claude Code"` | (1.4.0) Asks Darwin for a **read-only** connection: you approve a key that reads market data and your whole account and can never trade. `call` refuses anything that could trade before sending it |
 | `pair reconnect --client-name "Claude Code"` | Same, but gives a **new key to one of your existing agents**, which you pick and confirm in the browser |
-| `import <file>` | Imports a key file you downloaded from Darwin (an agent key from the agent's **Manage** tab, a version-2 owner key from manual setup, or a Read-Only API Key file), verifies it with Darwin, then deletes the file |
+| `import [--realm beta] --keep-file <file>` | Imports a key file you downloaded from Darwin (an agent key from the agent's **Manage** tab, a version-2 owner key from manual setup, or a Read-Only API Key file) and verifies it with Darwin. `--keep-file` keeps the file; without it the file is deleted. (1.4.1) Where the key can only be kept in memory (no OS secret store, e.g. a Linux sandbox's `/dev/shm`), keep the file and import it again when the helper says the key is gone |
 | `call GET /api/agent/v1/grant` | Calls the Darwin agent API with the stored key (`--as-agent <id>` names another agent for an all-agents key) |
 | `status [--check]` / `forget …` | Lists stored agents / deletes the local copy |
 
@@ -117,6 +117,8 @@ skills/darwin-agentic-trading/
   in the macOS Keychain, Windows Credential Manager or the Linux Secret Service (via native
   APIs or stdin, never on a command line). With no secret store it keeps the key in memory
   only (a RAM-backed file, gone at reboot) and says so. It checks the store before pairing.
+  On such a machine, import a key file with `--keep-file` and keep the file: the helper says
+  when the key is gone, and importing the file again restores it.
 - **Pinned hosts.** The helper talks only to `https://darwin.finance` and
   `https://beta.darwin.finance`, only under `/api/agent/`, never follows redirects, and only
   ever sends a key to the realm that issued it.

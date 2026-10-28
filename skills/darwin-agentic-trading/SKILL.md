@@ -5,14 +5,15 @@ description: >-
   connect to Darwin Finance, pair, reconnect or import a key file, then trade on
   darwin.finance. Use when the user says "set up a Darwin agent", "agentic trading
   on Darwin", "connect to Darwin Finance", "trade on darwin.finance", "reconnect my
-  Darwin agent", "import a Darwin agent key file", or mentions a Darwin agent key,
+  Darwin agent", "import a Darwin agent key file", "import the key with the Darwin
+  skill", or mentions a Darwin agent key,
   pairing code or darwin.finance/agents. The user approves in their own browser:
   never ask for passwords, passkeys, seed phrases or API keys.
 license: MIT
 compatibility: Needs python3 (3.8+) and outbound HTTPS to darwin.finance. Without python3, follow https://darwin.finance/agents/setup.md instead.
 metadata:
   author: Darwin Finance
-  version: "1.4.0"
+  version: "1.4.1"
   homepage: https://darwin.finance/agents/setup
   repository: https://github.com/DarwinFinance/agent-skills
 ---
@@ -84,6 +85,8 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
   [references/manual-pairing.md](references/manual-pairing.md) instead, which saves it
   in an owner-only file in your workspace. That works only if the workspace persists
   and your platform lets you write the file; if not, follow the first point instead.
+  A **key file** is different: import it with `--keep-file` and keep the file, as
+  **Import a key file** says.
 - **Save it only on your user's say-so.** If your user asked you to save the key
   (Darwin's setup line ends "save the API key so you can trade later"), go ahead; you
   do not need to ask how to store it. If they did not ask, ask once, before
@@ -251,11 +254,23 @@ Your user can create a key on the agent's **Manage** tab, or by setting one up
 manually on Darwin, and press **Download key file**. For a **Read-Only API Key** (made on
 Darwin's Agents page), it is **Download Key File for the Darwin Skill**. Then:
 
-    darwin.py import <path to the downloaded .json file>
+    darwin.py import --keep-file <file>
 
-The helper checks the key with Darwin, stores it, and deletes the file (pass
-`--keep-file` to keep it). The key never passes through this chat. A key for beta needs
-`--realm beta`; the helper refuses a file whose realm does not match.
+For a beta key file, `darwin.py import --realm beta --keep-file <file>`; the helper
+refuses a file whose realm does not match. The helper checks the key with Darwin (for a
+read-only file, that the key trades nothing), stores it, and from then on adds it to your
+calls. It reads no other file, and the key never passes through this chat. Without
+`--keep-file` it deletes the file after importing it.
+
+**Keep the file where the key is memory-only.** On a machine with no OS secret store
+(for example a Linux sandbox such as Muse's, where the helper keeps the key in memory
+only, in `/dev/shm`), the key is gone after a reboot or a sandbox reset. If the import
+says it stored the key in memory only (`stored_in`), keep the file somewhere that will
+still be there in a later session, and import it again when the skill says the key is
+gone (`key_missing`). The helper makes a kept file owner-only (or says it could not);
+never keep it anywhere others can read. When your user asks you to "import the key with the Darwin skill",
+this is what they mean. Where the key is in the OS secret store, tell your user to
+delete the file once it is imported.
 
 A manually set-up key may be an **owner key** (`"version": 2`, `"credential": "owner_key"`):
 it reads your user's whole Darwin account and trades only what its `trade` field names.
@@ -269,6 +284,10 @@ every account call.
   (`--check` asks Darwin whether each key still works).
 - A `401` means the key was revoked, the agent was stopped, or its limits changed:
   reconnect, pair again, or import a new key file.
+- `key_missing` means the stored key is gone (a memory-only key does not survive a
+  reboot). If you kept its key file, import it again with
+  `darwin.py import --keep-file <file>` (`--realm beta` too for beta); otherwise pair
+  again or ask your user for a new key file.
 - Several agents stored? Add `--agent-id <id>` (and `--realm beta` for beta) to `call`.
 - `darwin.py forget --agent-id <id>` deletes the local copy only. Tell your user to
   revoke the key on the agent's **Manage** tab too.

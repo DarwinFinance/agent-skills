@@ -957,6 +957,140 @@ class Import(Base):
         self.assertTrue(op.requests and all(r["url"].startswith(BETA) for r in op.requests))
 
 
+# ── 1.4.1: keep the key file where the key is memory-only (owner, 2026-10-28) ──────────────────
+class MemoryOnlyStore(FakeStore):
+    """Stands in for RamFileStore (no OS secret store, e.g. Muse's Linux sandbox)."""
+    name = D.RamFileStore.name
+    description = D.RamFileStore.description
+
+
+class KeepFileReimport(Base):
+    GRANT_URL = ("GET", PROD + "/api/agent/v1/grant")
+    HELLO_URL = ("GET", PROD + "/api/agent/v1/hello")
+
+    def keyfile(self, realm="darwin.finance"):
+        data = {"type": "darwin-agent-key", "version": 1, "realm": realm, "agent_id": GRANT, "key": KEY}
+        path = os.path.join(self.tmp, "darwin-agent-key-my-agent.json")
+        with open(path, "w") as f:
+            json.dump(data, f)
+        return path
+
+    def test_a_gone_key_points_at_reimporting_the_kept_file(self):
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        self.assertEqual(self.run_cli("import", path, "--keep-file")[1]["status"], "imported")
+        FakeStore.data.clear()  # the sandbox forgot the memory-only key
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant")
+        self.assertEqual(out["error"], "key_missing")
+        self.assertIn("re-import it with `darwin.py import --keep-file <file>`", out["detail"])
+        self.assertNotIn("--realm beta", out["detail"])
+
+    def test_a_gone_beta_key_names_the_beta_realm(self):
+        path = self.keyfile(realm="beta.darwin.finance")
+        self.use({("GET", BETA + "/api/agent/v1/grant"): [(200, {"grant": {"id": GRANT}})],
+                  ("GET", BETA + "/api/agent/v1/hello"): [HELLO]})
+        self.assertEqual(self.run_cli("import", path, "--realm", "beta", "--keep-file")[1]["status"], "imported")
+        FakeStore.data.clear()
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--realm", "beta")
+        self.assertEqual(out["error"], "key_missing")
+        self.assertIn("re-import it with `darwin.py import --realm beta --keep-file <file>`", out["detail"])
+
+    def test_memory_only_kept_file_says_keep_it_and_import_again(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertTrue(os.path.exists(path))
+        self.assertIn("Keep the file", out["detail"])
+        self.assertIn("import it again with `darwin.py import --keep-file <file>`", out["detail"])
+        self.assertNotIn("delete it when it is no longer needed", out["detail"])
+
+    def test_memory_only_deleted_file_says_to_keep_it_next_time(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+        self.assertFalse(os.path.exists(path))
+        self.assertIn("memory only", out["detail"])
+        self.assertIn("--keep-file", out["detail"])
+
+    def test_a_secret_store_kept_file_still_says_delete_it_later(self):
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertIn("delete it when it is no longer needed", out["detail"])
+
+    def test_a_kept_file_is_imported_again_after_the_key_is_gone(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        path = self.keyfile()
+        op = self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})] * 3, self.HELLO_URL: [HELLO, HELLO]})
+        self.assertEqual(self.run_cli("import", path, "--keep-file")[1]["status"], "imported")
+        FakeStore.data.clear()
+        self.assertEqual(self.run_cli("call", "GET", "/api/agent/v1/grant")[1]["error"], "key_missing")
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertTrue(os.path.exists(path))
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant")
+        self.assertEqual(out["status"], 200, out)
+        self.assertEqual(op.requests[-1]["headers"]["Authorization"], "Bearer " + KEY)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_a_kept_file_is_made_owner_only(self):
+        # Codex 1.4.1 r1 P2: a kept file holds the key for good, so a typical 0644 download is narrowed.
+        path = self.keyfile()
+        os.chmod(path, 0o644)
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_a_kept_file_that_cannot_be_narrowed_says_so(self):
+        # Codex 1.4.1 r2 P2: on Windows the ACL is not checked, so the helper never implies the file is private.
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        with mock.patch.object(D.KeyFile, "restrict", return_value="permissions_not_checked_here"):
+            code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertIn("Could not confirm the file is owner-only (permissions_not_checked_here)", out["detail"])
+        self.assertIn("keep it in a folder only you can read", out["detail"])
+
+    def test_memory_only_read_only_file_also_says_keep_it(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        d = {"type": "darwin-agent-key", "version": 2, "realm": "darwin.finance", "credential": "owner_key",
+             "trade": {"scope": "none"}, "key": OWNER_KEY}
+        path = os.path.join(self.tmp, "darwin-ai-key-read-only.json")
+        with open(path, "w") as f:
+            json.dump(d, f)
+        self.use({("GET", PROD + "/api/agent/v1/agents"): [(200, {"permissions": RO_PERMS, "agents": []})],
+                  self.HELLO_URL: [READ_ONLY_HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertIn("import it again with `darwin.py import --keep-file <file>`", out["detail"])
+
+    def test_keep_file_help_says_when_to_use_it(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            try:
+                D.main(["import", "--help"])
+            except SystemExit:
+                pass
+        text = " ".join(out.getvalue().split())
+        self.assertIn("memory only", text)
+        self.assertIn("import it again", text)
+
+    def test_skill_md_matches_darwins_setup_wording(self):
+        skill_dir = os.path.join(HERE, "..", "skills", "darwin-agentic-trading")
+        with open(os.path.join(skill_dir, "SKILL.md"), encoding="utf-8") as f:
+            text = " ".join(f.read().split())
+        self.assertIn("darwin.py import --keep-file <file>", text, "import command")
+        self.assertIn("darwin.py import --realm beta --keep-file <file>", text)
+        self.assertIn("/dev/shm", text)
+        self.assertIn("import it again when the skill says the key is gone", text)
+        self.assertIn('When your user asks you to "import the key with the Darwin skill", this is what they mean.', text)
+
+
 # ── output safety ─────────────────────────────────────────────────────────────
 class OutputSafety(Base):
     def test_traceback_suppressed(self):
