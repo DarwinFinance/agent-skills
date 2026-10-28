@@ -48,7 +48,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 # ── Realms ────────────────────────────────────────────────────────────────────
 REALM_HOSTS = {"prod": "darwin.finance", "beta": "beta.darwin.finance"}
@@ -1026,6 +1026,27 @@ def store_key(backend, realm, agent_id, key):
         raise StoreError("read-back mismatch")
 
 
+def reimport_command(realm):
+    """The command that imports a kept key file again (Darwin's /agents/setup.md wording, #7552)."""
+    return "darwin.py import%s --keep-file <file>" % (" --realm beta" if realm == "beta" else "")
+
+
+def kept_file_detail(backend, realm):
+    """Where the key is memory-only (no OS secret store, e.g. a Linux sandbox's /dev/shm), the kept key file is
+    how the key comes back after the machine forgets it — so the agent keeps it instead of asking for deletion."""
+    if getattr(backend, "name", None) == RamFileStore.name:
+        return ("The key file was kept (--keep-file). The key is stored in memory only, so it is gone after a reboot. "
+                "Keep the file, and import it again with `%s` whenever the helper says the key is gone." % reimport_command(realm))
+    return "The key file was kept (--keep-file). Tell your user to delete it when it is no longer needed."
+
+
+def deleted_file_detail(backend):
+    if getattr(backend, "name", None) == RamFileStore.name:
+        return ("The key file was deleted after import. The key is stored in memory only, so it is gone after a reboot; "
+                "next time, import with --keep-file and keep the file so you can import it again.")
+    return "The key file was deleted after import."
+
+
 def select_entry(state, realm=None, agent_id=None):
     entries = state.index()
     if realm:
@@ -1047,7 +1068,8 @@ def load_key(entry):
     except Exception as e:
         raise HelperError("secret_store_unavailable", "Could not read the key from %s (%s)." % (backend.description, redact(str(e))[:120]))
     if not key or not STORED_KEY_RE.match(key):
-        raise HelperError("key_missing", "The stored key is gone (memory-only keys vanish at reboot). Pair again or import a key file.")
+        raise HelperError("key_missing", "The stored key is gone (memory-only keys vanish at reboot). If you kept its key file, "
+                          "re-import it with `%s`; otherwise pair again or import a new key file." % reimport_command(entry.get("realm")))
     remember_secret(key)
     return key
 
@@ -1727,9 +1749,9 @@ def _import(args, kf):
                SHOW_WELCOME if welcome is not None else (SHOW_ADDRESS_BLOCK if address else ""))).strip()}
     with_address(out, welcome, address)
     if deleted:
-        out["detail"] = "The key file was deleted after import."
+        out["detail"] = deleted_file_detail(backend)
     elif args.keep_file:
-        out["detail"] = "The key file was kept (--keep-file). Tell your user to delete it when it is no longer needed."
+        out["detail"] = kept_file_detail(backend, realm)
     elif delete_error == "shared_folder":
         out["detail"] = "The key file is in a folder other users can write to, so it was not deleted automatically. Tell your user to delete it."
     else:
@@ -1740,13 +1762,13 @@ def _import(args, kf):
     return 0
 
 
-def _delete_detail(args, kf):
+def _delete_detail(args, kf, backend, realm):
     """Delete the imported file unless kept. Returns (deleted, detail)."""
     if args.keep_file:
-        return False, "The key file was kept (--keep-file). Tell your user to delete it when it is no longer needed."
+        return False, kept_file_detail(backend, realm)
     err = kf.delete()
     if err is None:
-        return True, "The key file was deleted after import."
+        return True, deleted_file_detail(backend)
     if err == "shared_folder":
         return False, "The key file is in a folder other users can write to, so it was not deleted automatically. Tell your user to delete it."
     return False, "Could not delete the key file (%s). Tell your user to delete it." % err
@@ -1773,7 +1795,7 @@ def _import_owner_all(args, kf, state, realm, key, host):
         except Exception as e:
             raise HelperError("store_failed", "Could not store the key in %s (%s). Nothing was imported; the key file was kept." % (backend.description, redact(str(e))[:80]))
         record_key(state, realm, ALL_SUB_ACCOUNTS_ID, None, backend, host, "key_file", credential="owner_key", scope="all")
-    deleted, detail = _delete_detail(args, kf)
+    deleted, detail = _delete_detail(args, kf, backend, realm)
     emit({"status": "imported", "agent_id": ALL_SUB_ACCOUNTS_ID, "realm": realm, "stored_in": backend.description,
           "credential": "owner_key", "all_agents": True, "all_agents_note": OWNER_ALL_NOTE,
           "key_file_deleted": deleted, "detail": detail,
@@ -1801,7 +1823,7 @@ def _import_owner_read(args, kf, state, realm, key, host):
         except Exception as e:
             raise HelperError("store_failed", "Could not store the key in %s (%s). Nothing was imported; the key file was kept." % (backend.description, redact(str(e))[:80]))
         record_key(state, realm, READ_ONLY_ID, None, backend, host, "key_file", credential="owner_key", scope="read")
-    deleted, detail = _delete_detail(args, kf)
+    deleted, detail = _delete_detail(args, kf, backend, realm)
     out = {"status": "imported", "agent_id": READ_ONLY_ID, "realm": realm, "stored_in": backend.description,
            "credential": "owner_key", "key_file_deleted": deleted, "detail": detail}
     return _emit_read_only(out, realm, key, host)
@@ -1956,7 +1978,9 @@ def build_parser():
     imp = sub.add_parser("import", help="import a key file downloaded from Darwin (an agent key, or an owner key from manual setup)")
     imp.add_argument("file")
     imp.add_argument("--realm", default=None)
-    imp.add_argument("--keep-file", action="store_true")
+    imp.add_argument("--keep-file", action="store_true",
+                     help="keep the key file after import. Use it where the key is stored in memory only (no OS secret "
+                          "store, e.g. /dev/shm in a Linux sandbox), so you can import it again when the key is gone")
     imp.add_argument("--client-name", default=None, help="your app name (for the User-Agent only)")
 
     c = sub.add_parser("call", help="call the Darwin agent API with the stored key")

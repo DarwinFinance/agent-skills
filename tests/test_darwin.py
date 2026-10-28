@@ -957,6 +957,93 @@ class Import(Base):
         self.assertTrue(op.requests and all(r["url"].startswith(BETA) for r in op.requests))
 
 
+# ── 1.4.1: keep the key file where the key is memory-only (owner, 2026-10-28) ──────────────────
+class MemoryOnlyStore(FakeStore):
+    """Stands in for RamFileStore (no OS secret store, e.g. Muse's Linux sandbox)."""
+    name = D.RamFileStore.name
+    description = D.RamFileStore.description
+
+
+class KeepFileReimport(Base):
+    GRANT_URL = ("GET", PROD + "/api/agent/v1/grant")
+    HELLO_URL = ("GET", PROD + "/api/agent/v1/hello")
+
+    def keyfile(self, realm="darwin.finance"):
+        data = {"type": "darwin-agent-key", "version": 1, "realm": realm, "agent_id": GRANT, "key": KEY}
+        path = os.path.join(self.tmp, "darwin-agent-key-my-agent.json")
+        with open(path, "w") as f:
+            json.dump(data, f)
+        return path
+
+    def test_a_gone_key_points_at_reimporting_the_kept_file(self):
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        self.assertEqual(self.run_cli("import", path, "--keep-file")[1]["status"], "imported")
+        FakeStore.data.clear()  # the sandbox forgot the memory-only key
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant")
+        self.assertEqual(out["error"], "key_missing")
+        self.assertIn("re-import it with `darwin.py import --keep-file <file>`", out["detail"])
+        self.assertNotIn("--realm beta", out["detail"])
+
+    def test_a_gone_beta_key_names_the_beta_realm(self):
+        path = self.keyfile(realm="beta.darwin.finance")
+        self.use({("GET", BETA + "/api/agent/v1/grant"): [(200, {"grant": {"id": GRANT}})],
+                  ("GET", BETA + "/api/agent/v1/hello"): [HELLO]})
+        self.assertEqual(self.run_cli("import", path, "--realm", "beta", "--keep-file")[1]["status"], "imported")
+        FakeStore.data.clear()
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant", "--realm", "beta")
+        self.assertEqual(out["error"], "key_missing")
+        self.assertIn("re-import it with `darwin.py import --realm beta --keep-file <file>`", out["detail"])
+
+    def test_memory_only_kept_file_says_keep_it_and_import_again(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertTrue(os.path.exists(path))
+        self.assertIn("Keep the file", out["detail"])
+        self.assertIn("import it again with `darwin.py import --keep-file <file>`", out["detail"])
+        self.assertNotIn("delete it when it is no longer needed", out["detail"])
+
+    def test_memory_only_deleted_file_says_to_keep_it_next_time(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path)
+        self.assertEqual(out["status"], "imported", out)
+        self.assertFalse(os.path.exists(path))
+        self.assertIn("memory only", out["detail"])
+        self.assertIn("--keep-file", out["detail"])
+
+    def test_a_secret_store_kept_file_still_says_delete_it_later(self):
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertIn("delete it when it is no longer needed", out["detail"])
+
+    def test_keep_file_help_says_when_to_use_it(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            try:
+                D.main(["import", "--help"])
+            except SystemExit:
+                pass
+        text = " ".join(out.getvalue().split())
+        self.assertIn("memory only", text)
+        self.assertIn("import it again", text)
+
+    def test_skill_md_matches_darwins_setup_wording(self):
+        skill_dir = os.path.join(HERE, "..", "skills", "darwin-agentic-trading")
+        with open(os.path.join(skill_dir, "SKILL.md"), encoding="utf-8") as f:
+            text = " ".join(f.read().split())
+        self.assertIn("darwin.py import --keep-file <file>", text, "import command")
+        self.assertIn("darwin.py import --realm beta --keep-file <file>", text)
+        self.assertIn("/dev/shm", text)
+        self.assertIn("import it again when the skill says the key is gone", text)
+        self.assertIn('When your user asks you to "import the key with the Darwin skill", this is what they mean.', text)
+
+
 # ── output safety ─────────────────────────────────────────────────────────────
 class OutputSafety(Base):
     def test_traceback_suppressed(self):
