@@ -48,10 +48,16 @@ import unicodedata
 import urllib.error
 import urllib.request
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 # ── Realms ────────────────────────────────────────────────────────────────────
 REALM_HOSTS = {"prod": "darwin.finance", "beta": "beta.darwin.finance"}
+# Darwin's "Agents and API Keys" tab, where your user reviews and revokes owner and read-only keys
+# (Darwin's owner-links.ts AI_KEYS_PATH; the /mcp page was retired on 2026-10-28).
+AI_KEYS_PATH = "/agents?tab=agents"
+# Darwin's "Connect an AI" (owner-links.ts CONNECT_AI_PATH): where your user connects an AI or creates a
+# Read-Only API Key.
+CONNECT_AI_PATH = "/agents?create=1"
 HOST_TO_REALM = {v: k for k, v in REALM_HOSTS.items()}
 
 SERVICE = "finance.darwin.agent-skill"
@@ -85,7 +91,7 @@ OWNER_READ_ONLY_PERMISSIONS_SUFFIX = " · Trade: none"
 READ_ONLY_POST_RE = re.compile(r"^/api/agent/v1/data/[A-Za-z0-9_-]{1,64}(?:\?.*)?$")
 READ_ONLY_REFUSAL = ("This Darwin connection is read-only: it reads market data and your user's account, but it can't trade, "
                      "move funds, or create or pair an Agentic Sub-Account. Nothing was sent. If your user wants an AI that "
-                     "trades, they connect one on Darwin's Agents page.")
+                     "trades, they connect one with Connect an AI on Darwin (%s).")
 DEVICE_CODE_RE = re.compile(r"^darwinAI_pair_[A-Za-z0-9_-]{40,114}$")
 USER_CODE_RE = re.compile(r"^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -244,6 +250,16 @@ def realm_origin(realm):
     if not host:
         raise HelperError("invalid_realm", "realm must be prod or beta")
     return "https://" + host
+
+
+def ai_keys_url(realm):
+    """The realm's Agents and API Keys tab (owner and read-only keys are revoked there)."""
+    return realm_origin(realm) + AI_KEYS_PATH
+
+
+def connect_ai_url(realm):
+    """The realm's Connect an AI (a chat app connection, a Read-Only API Key)."""
+    return realm_origin(realm) + CONNECT_AI_PATH
 
 
 def parse_realm(value):
@@ -1268,7 +1284,8 @@ def cmd_pair_start(args):
             state.clear_pending()
             raise HelperError("read_only_unsupported",
                               "Darwin can't connect you read-only here, so no link is shown. Ask your user to create a "
-                              "Read-Only API Key on Darwin's Agents page and give it to you as a key file (`import`).")
+                              "Read-Only API Key with Connect an AI on Darwin (%s) and give it to you as a key file "
+                              "(`import`)." % connect_ai_url(realm))
         if mode == "reconnect" and resp.get("mode") != "reconnect":
             # An older server ignores `mode` and would create a NEW agent instead.
             raise HelperError("reconnect_unsupported",
@@ -1427,8 +1444,10 @@ def _owner_key_target(p, realm, resp):
     """For an owner-key answer: (agent_id for the index, scope) — or a HelperError. Only from a pairing
     this helper started asking for one, only a `darwinAI_mcp_` key, only one of the two trade shapes."""
     key_name = safe_text(resp.get("key_name"), 80) or "Paired: %s" % p.get("client_name", "agent")
+    keys_url = ai_keys_url(realm)
     bad = HelperError("bad_response", "Darwin's key answer was malformed; nothing was stored. Ask your user to revoke the API key "
-                      "named \"%s\" on Darwin's MCP page, then pair again." % key_name)
+                      "named \"%s\" on Darwin's Agents and API Keys tab (%s), then pair again." % (key_name, keys_url),
+                      keys_url=keys_url)
     token = resp.get("access_token")
     if not p.get("asked_owner_key") or not isinstance(token, str) or not OWNER_KEY_RE.match(token):
         raise bad
@@ -1473,7 +1492,8 @@ def _finish_owner_key(state, p, realm, backend, host, resp):
         state.clear_pending()
         raise HelperError("store_failed_after_issue",
                           "The key was issued but could not be stored, and it is NOT shown here. Ask your user to revoke the API key "
-                          "named \"%s\" on Darwin's MCP page, then pair again." % key_name)
+                          "named \"%s\" on Darwin's Agents and API Keys tab (%s), then pair again." % (key_name, ai_keys_url(realm)),
+                          keys_url=ai_keys_url(realm))
     record_key(state, realm, agent_id, None, backend, host, "pairing", credential="owner_key", scope=scope)
     state.clear_pending()
     out = {"status": "paired", "agent_id": agent_id, "realm": realm, "mode": p.get("mode", "new"), "credential": "owner_key",
@@ -1503,14 +1523,14 @@ def _finish_owner_key(state, p, realm, backend, host, resp):
 READ_ONLY_NOTE = ("This key is READ-ONLY: it reads Darwin market data and your user's whole account (holdings, positions, "
                   "orders, history, watchlists and alerts) with `call GET …` and `call POST /api/agent/v1/data/<tool>`. It can't "
                   "trade, move funds, or create or pair an Agentic Sub-Account: the helper refuses those calls, and so does Darwin. "
-                  "Never offer to trade. Your user revokes it on Darwin's Agents page.")
+                  "Never offer to trade. Your user revokes it on Darwin's Agents and API Keys tab (%s).")
 
 
 def _emit_read_only(out, realm, token, host):
     """The read-only key is stored: say hello with NO agent (Darwin answers the account-level read-only welcome)."""
     welcome, _agent, _address, hello_err = say_hello(realm, token, host, None)
     out["read_only"] = True
-    out["read_only_note"] = READ_ONLY_NOTE
+    out["read_only_note"] = READ_ONLY_NOTE % ai_keys_url(realm)
     out["welcome"] = welcome
     out["next"] = ("%s %s Then read %s/agents/docs/llms.txt for the read routes." % (
         SHOW_WELCOME if welcome is not None else "Tell your user, in one short sentence, that you are connected to their Darwin account read-only.",
@@ -1884,7 +1904,7 @@ def cmd_call(args):
     entry = select_entry(state, parse_realm(args.realm), args.agent_id)
     # 🔴 1.4.0: a READ-ONLY key never sends anything that could trade (Darwin refuses it anyway).
     if is_read_only_entry(entry) and not read_only_allows(method, path):
-        raise HelperError("read_only", READ_ONLY_REFUSAL)
+        raise HelperError("read_only", READ_ONLY_REFUSAL % connect_ai_url(entry["realm"]))
     key = load_key(entry)
     target = target_for(key, entry["agent_id"])
     if args.as_agent is not None:
@@ -1942,6 +1962,7 @@ def cmd_status(args):
 
 def cmd_forget(args):
     state = State()
+    realms = set()
     with state.lock():
         removed = []
         if args.pending or args.all:
@@ -1960,11 +1981,13 @@ def cmd_forget(args):
                 except Exception:
                     pass
                 removed.append("%s:%s" % (e["realm"], e["agent_id"]))
+                realms.add(e["realm"])
             state.save_index(keep)
         if not (args.pending or args.all or args.agent_id):
             raise HelperError("invalid_arguments", "Say what to forget: --agent-id ID, --pending, or --all.")
     emit({"status": "forgotten", "removed": removed,
-          "next": "Forgetting only deletes the local copy. Tell your user to revoke the key on the agent's Manage tab if it should stop working."})
+          "next": "Forgetting only deletes the local copy. Tell your user to revoke the key if it should stop working: an agent key "
+                  "on the agent's Manage tab, an owner or read-only key on Darwin's Agents and API Keys tab (%s)." % " or ".join(ai_keys_url(r) for r in (sorted(realms) or ["prod"]) if r in REALM_HOSTS)})
     return 0
 
 

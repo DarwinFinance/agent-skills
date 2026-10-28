@@ -43,8 +43,8 @@ the Darwin app. An agent's key cannot create Darwin credentials: new keys come o
 you, on Darwin.
 
 **Using a chat app** (Claude.ai, ChatGPT, Claude Cowork) that can't keep a key? You don't
-need this skill to trade: connect the chat app on Darwin's MCP page
-([darwin.finance/mcp](https://darwin.finance/mcp)) and turn on trading for one of your
+need this skill to trade: connect the chat app with Connect an AI on Darwin
+([darwin.finance/agents?create=1](https://darwin.finance/agents?create=1)) and turn on trading for one of your
 agents when you approve it, with your passkey and 2FA. The app holds no key.
 
 **Prefer a terminal?** The [Darwin CLI](https://darwin.finance/agents/cli) pairs the same

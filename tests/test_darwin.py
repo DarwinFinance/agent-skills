@@ -1568,7 +1568,7 @@ class SkillDocs(unittest.TestCase):
         self.assertIn("Claude Code, Codex, Hermes, or any agent with this skill: `npx skills add DarwinFinance/agent-skills`", before)
         self.assertIn("as a downloaded key file (never pasted into the chat)", before)
         self.assertNotIn("connector for chat apps is coming", before)
-        self.assertIn("connect the chat app on Darwin's MCP page (https://darwin.finance/mcp)", before)
+        self.assertIn("connect the chat app with Connect an AI on Darwin (https://darwin.finance/agents?create=1)", before)
         self.assertIn("That works only if the workspace persists and your platform lets you write the file", before)
         manual = " ".join(self._docs()[os.path.join("references", "manual-pairing.md")].split())
         self.assertIn("**Check first that you can keep the key**", manual)
@@ -1787,6 +1787,130 @@ class ReadOnlyHardening(Base):
         code, out = self.run_cli("pair", "wait")
         self.assertEqual(out["error"], "bad_response")
         self.assertNotIn(opaque, self.outputs[-1][0])
+
+
+# ── 1.4.2: the /mcp page is retired (DarwinFinance/darwin#7567, #7568, owner 2026-10-28) ──────────
+CONNECT_AI = PROD + "/agents?create=1"      # owner-links.ts CONNECT_AI_PATH
+AI_KEYS_TAB = PROD + "/agents?tab=agents"   # owner-links.ts AI_KEYS_PATH
+
+
+class ConnectAnAiLinks(Base):
+    SKILL_DIR = os.path.join(HERE, "..", "skills", "darwin-agentic-trading")
+    TOKEN = ("POST", PROD + "/api/agent/v1/pair/token")
+    BETA_TOKEN = ("POST", BETA + "/api/agent/v1/pair/token")
+
+    def _texts(self):
+        out = {}
+        for root, _dirs, files in os.walk(self.SKILL_DIR):
+            for f in files:
+                if f.endswith((".md", ".py")):
+                    with open(os.path.join(root, f), encoding="utf-8") as fh:
+                        out[os.path.relpath(os.path.join(root, f), self.SKILL_DIR)] = fh.read()
+        with open(os.path.join(HERE, "..", "README.md"), encoding="utf-8") as fh:
+            out["README.md"] = fh.read()
+        return out
+
+    def _skill(self):
+        return " ".join(self._texts()["SKILL.md"].split())
+
+    def test_nothing_names_the_retired_mcp_page(self):
+        import re
+        # mcp.darwin.finance (the MCP server) is still a real host; the /mcp PAGE is not.
+        page = re.compile(r"MCP page|(?<!mcp\.)darwin\.finance/mcp\b")
+        for name, text in self._texts().items():
+            self.assertIsNone(page.search(text), "%s still names the /mcp page" % name)
+
+    def test_a_chat_app_is_connected_with_connect_an_ai(self):
+        text = self._skill()
+        line = "connect the chat app with Connect an AI on Darwin (%s)" % CONNECT_AI
+        self.assertEqual(text.count(line), 2, "Which way fits you + Before you start")
+        readme = " ".join(self._texts()["README.md"].split())
+        self.assertIn("connect the chat app with Connect an AI on Darwin ([darwin.finance/agents?create=1](%s))" % CONNECT_AI, readme)
+
+    def test_owner_and_read_only_keys_are_revoked_on_the_agents_and_api_keys_tab(self):
+        text = self._skill()
+        self.assertIn("They revoke it on Darwin's Agents and API Keys tab (%s)." % AI_KEYS_TAB, text)
+        self.assertIn("Your user revokes a read-only key on Darwin's Agents and API Keys tab (%s)." % AI_KEYS_TAB, text)
+        self.assertNotIn("Darwin's Agents page", text)
+        # forget: an agent key is revoked on its Manage tab, an owner key on the keys tab.
+        self.assertIn("revoke the key on the agent's **Manage** tab too (an owner or read-only key: on the "
+                      "Agents and API Keys tab)", text)
+
+    def _owner_start(self, beta=False):
+        host = BETA if beta else PROD
+        self.use({("POST", host + "/api/agent/v1/pair"): [pair_ok(host=host)]})
+        argv = ["pair", "start", "--client-name", "Claude Code"] + (["--realm", "beta"] if beta else [])
+        code, out = self.run_cli(*argv)
+        self.assertEqual(out["status"], "show_user", out)
+
+    def test_a_malformed_owner_key_answer_points_at_the_keys_tab_of_its_realm(self):
+        for beta in (False, True):
+            self._owner_start(beta)
+            host = BETA if beta else PROD
+            self.use({self.BETA_TOKEN if beta else self.TOKEN: [owner_token_ok(key="darwinAI_mcp_short")]})
+            code, out = self.run_cli("pair", "wait")
+            self.assertEqual(out["error"], "bad_response", out)
+            self.assertIn("on Darwin's Agents and API Keys tab (%s/agents?tab=agents)" % host, out["detail"])
+            self.assertEqual(out["keys_url"], host + "/agents?tab=agents")
+
+    def test_an_owner_key_that_could_not_be_stored_points_at_the_keys_tab(self):
+        self._owner_start()
+        FakeStore.fail_put_after = FakeStore.puts + 1  # preflight passes, the real put fails
+        self.use({self.TOKEN: [owner_token_ok()]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertEqual(out["error"], "store_failed_after_issue", out)
+        self.assertIn("named \"Paired: Claude Code\" on Darwin's Agents and API Keys tab (%s)" % AI_KEYS_TAB, out["detail"])
+        self.assertEqual(out["keys_url"], AI_KEYS_TAB)
+
+    def test_forget_names_both_places_to_revoke(self):
+        self.use({})
+        code, out = self.run_cli("forget", "--all")
+        self.assertIn("the agent's Manage tab", out["next"])
+        self.assertIn("Darwin's Agents and API Keys tab (%s)" % AI_KEYS_TAB, out["next"])
+
+    def test_forget_across_both_realms_links_both_keys_tabs(self):
+        for realm, host in (("prod", "darwin.finance"), ("beta", "beta.darwin.finance")):
+            FakeStore.data[host + ":" + GRANT] = OWNER_KEY
+            D.record_key(D.State(), realm, GRANT, None, FakeStore(), "Claude Code", "pairing", credential="owner_key", scope="one")
+        self.use({})
+        code, out = self.run_cli("forget", "--all")
+        self.assertIn(AI_KEYS_TAB, out["next"])
+        self.assertIn(BETA + "/agents?tab=agents", out["next"])
+
+    def test_no_helper_message_names_darwins_agents_page(self):
+        self.assertNotIn("Agents page", open(os.path.join(self.SKILL_DIR, "scripts", "darwin.py"), encoding="utf-8").read())
+
+    def test_read_only_unsupported_sends_the_user_to_connect_an_ai_of_its_realm(self):
+        for beta in (False, True):
+            host = BETA if beta else PROD
+            self.use({("POST", host + "/api/agent/v1/pair"): [pair_ok(host=host, credential=2)]})  # no read-only echo
+            argv = ["pair", "start", "--read-only", "--client-name", "Claude Code"] + (["--realm", "beta"] if beta else [])
+            code, out = self.run_cli(*argv)
+            self.assertEqual(out["error"], "read_only_unsupported", out)
+            self.assertIn("Read-Only API Key with Connect an AI on Darwin (%s/agents?create=1)" % host, out["detail"])
+
+    def test_a_read_only_pairing_names_the_keys_tab_to_revoke_it(self):
+        self.use({("POST", PROD + "/api/agent/v1/pair"): [pair_ok(credential=2, read_only="only")]})
+        self.run_cli("pair", "start", "--read-only", "--client-name", "Claude Code")
+        self.use({self.TOKEN: [read_only_token_ok()], ("GET", PROD + "/api/agent/v1/hello"): [READ_ONLY_HELLO]})
+        code, out = self.run_cli("pair", "wait")
+        self.assertTrue(out["read_only"], out)
+        self.assertIn("Your user revokes it on Darwin's Agents and API Keys tab (%s)." % AI_KEYS_TAB, out["read_only_note"])
+
+    def test_a_refused_read_only_call_sends_the_user_to_connect_an_ai(self):
+        FakeStore.data["beta.darwin.finance:" + D.READ_ONLY_ID] = OWNER_KEY
+        D.record_key(D.State(), "beta", D.READ_ONLY_ID, None, FakeStore(), "Claude Code", "pairing", credential="owner_key", scope="read")
+        self.use({})
+        code, out = self.run_cli("call", "POST", "/api/agent/v1/orders", "{}", "--realm", "beta")
+        self.assertEqual(out["error"], "read_only", out)
+        self.assertIn("they connect one with Connect an AI on Darwin (%s/agents?create=1)" % BETA, out["detail"])
+
+    def test_forget_of_a_beta_key_links_the_beta_keys_tab(self):
+        FakeStore.data["beta.darwin.finance:" + GRANT] = OWNER_KEY
+        D.record_key(D.State(), "beta", GRANT, None, FakeStore(), "Claude Code", "pairing", credential="owner_key", scope="one")
+        self.use({})
+        code, out = self.run_cli("forget", "--agent-id", GRANT)
+        self.assertIn("Darwin's Agents and API Keys tab (%s/agents?tab=agents)" % BETA, out["next"])
 
 
 if __name__ == "__main__":
