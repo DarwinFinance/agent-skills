@@ -1022,6 +1022,43 @@ class KeepFileReimport(Base):
         code, out = self.run_cli("import", path, "--keep-file")
         self.assertIn("delete it when it is no longer needed", out["detail"])
 
+    def test_a_kept_file_is_imported_again_after_the_key_is_gone(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        path = self.keyfile()
+        op = self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})] * 3, self.HELLO_URL: [HELLO, HELLO]})
+        self.assertEqual(self.run_cli("import", path, "--keep-file")[1]["status"], "imported")
+        FakeStore.data.clear()
+        self.assertEqual(self.run_cli("call", "GET", "/api/agent/v1/grant")[1]["error"], "key_missing")
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertTrue(os.path.exists(path))
+        code, out = self.run_cli("call", "GET", "/api/agent/v1/grant")
+        self.assertEqual(out["status"], 200, out)
+        self.assertEqual(op.requests[-1]["headers"]["Authorization"], "Bearer " + KEY)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_a_kept_file_is_made_owner_only(self):
+        # Codex 1.4.1 r1 P2: a kept file holds the key for good, so a typical 0644 download is narrowed.
+        path = self.keyfile()
+        os.chmod(path, 0o644)
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_memory_only_read_only_file_also_says_keep_it(self):
+        D._BACKEND_FACTORIES = [MemoryOnlyStore]
+        d = {"type": "darwin-agent-key", "version": 2, "realm": "darwin.finance", "credential": "owner_key",
+             "trade": {"scope": "none"}, "key": OWNER_KEY}
+        path = os.path.join(self.tmp, "darwin-ai-key-read-only.json")
+        with open(path, "w") as f:
+            json.dump(d, f)
+        self.use({("GET", PROD + "/api/agent/v1/agents"): [(200, {"permissions": RO_PERMS, "agents": []})],
+                  self.HELLO_URL: [READ_ONLY_HELLO]})
+        code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertIn("import it again with `darwin.py import --keep-file <file>`", out["detail"])
+
     def test_keep_file_help_says_when_to_use_it(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

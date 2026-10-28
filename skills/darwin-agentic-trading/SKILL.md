@@ -267,7 +267,8 @@ calls. It reads no other file, and the key never passes through this chat. Witho
 only, in `/dev/shm`), the key is gone after a reboot or a sandbox reset. If the import
 says it stored the key in memory only (`stored_in`), keep the file somewhere that will
 still be there in a later session, and import it again when the skill says the key is
-gone (`key_missing`). When your user asks you to "import the key with the Darwin skill",
+gone (`key_missing`). The helper makes a kept file owner-only; never copy it anywhere
+others can read. When your user asks you to "import the key with the Darwin skill",
 this is what they mean. Where the key is in the OS secret store, tell your user to
 delete the file once it is imported.
 

@@ -1630,6 +1630,28 @@ class KeyFile(object):
         self.identity = (st.st_dev, st.st_ino)
         return raw
 
+    def restrict(self):
+        """Make a KEPT file owner-only (it now holds the key for good). POSIX only; the very file that was read,
+        through a no-follow handle. Returns None or a reason; Windows has no mode bits to narrow (None)."""
+        if os.name == "nt" or not hasattr(os, "fchmod"):
+            return None
+        try:
+            flags = os.O_RDONLY | _O_NOFOLLOW
+            fd = os.open(self.name, flags, dir_fd=self.dfd) if self.dfd is not None else os.open(self.path, flags)
+        except OSError as e:
+            return type(e).__name__
+        try:
+            fst = os.fstat(fd)
+            if (fst.st_dev, fst.st_ino) != self.identity:
+                return "file_changed"
+            if fst.st_mode & 0o077:
+                os.fchmod(fd, stat.S_IMODE(fst.st_mode) & 0o700)
+            return None
+        except OSError as e:
+            return type(e).__name__
+        finally:
+            os.close(fd)
+
     def delete(self):
         """Delete the file read, if that name still names it. Returns None or a reason.
         Never in a folder other users can write to (they could swap the name in between)."""
@@ -1737,25 +1759,14 @@ def _import(args, kf):
         address = safe_solana_address(grant.get("wallet")) or hello_address
         record_key(state, realm, agent_id, agent_name, backend, host, "key_file",
                    credential="owner_key" if scope == "one" else None, scope=scope)
-    deleted = False
-    delete_error = None
-    if not args.keep_file:
-        delete_error = kf.delete()
-        deleted = delete_error is None
+    deleted, detail = _delete_detail(args, kf, backend, realm)
     out = {"status": "imported", "agent": agent_name, "agent_id": agent_id, "realm": realm, "stored_in": backend.description,
            "key_file_deleted": deleted, "welcome": welcome,
            **({"credential": "owner_key"} if scope == "one" else {}),
            "next": ("%s Then run `call GET /api/agent/v1/grant`." % (
                SHOW_WELCOME if welcome is not None else (SHOW_ADDRESS_BLOCK if address else ""))).strip()}
     with_address(out, welcome, address)
-    if deleted:
-        out["detail"] = deleted_file_detail(backend)
-    elif args.keep_file:
-        out["detail"] = kept_file_detail(backend, realm)
-    elif delete_error == "shared_folder":
-        out["detail"] = "The key file is in a folder other users can write to, so it was not deleted automatically. Tell your user to delete it."
-    else:
-        out["detail"] = "Could not delete the key file (%s). Tell your user to delete it." % delete_error
+    out["detail"] = detail
     if hello_err:
         out["hello_error"] = hello_err
     emit(out)
@@ -1765,7 +1776,11 @@ def _import(args, kf):
 def _delete_detail(args, kf, backend, realm):
     """Delete the imported file unless kept. Returns (deleted, detail)."""
     if args.keep_file:
-        return False, kept_file_detail(backend, realm)
+        err = kf.restrict()
+        detail = kept_file_detail(backend, realm)
+        if err is not None:
+            detail += " Could not make it owner-only (%s): run `chmod 600` on it." % err
+        return False, detail
     err = kf.delete()
     if err is None:
         return True, deleted_file_detail(backend)
