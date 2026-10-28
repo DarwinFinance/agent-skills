@@ -1632,9 +1632,10 @@ class KeyFile(object):
 
     def restrict(self):
         """Make a KEPT file owner-only (it now holds the key for good). POSIX only; the very file that was read,
-        through a no-follow handle. Returns None or a reason; Windows has no mode bits to narrow (None)."""
+        through a no-follow handle. Returns None or a reason. On Windows the file's ACL is not checked (codex
+        1.4.1 r2 P2), so that is reported as a reason too: the agent is told to keep the file where only it can read it."""
         if os.name == "nt" or not hasattr(os, "fchmod"):
-            return None
+            return "permissions_not_checked_here"
         try:
             flags = os.O_RDONLY | _O_NOFOLLOW
             fd = os.open(self.name, flags, dir_fd=self.dfd) if self.dfd is not None else os.open(self.path, flags)
@@ -1779,7 +1780,8 @@ def _delete_detail(args, kf, backend, realm):
         err = kf.restrict()
         detail = kept_file_detail(backend, realm)
         if err is not None:
-            detail += " Could not make it owner-only (%s): run `chmod 600` on it." % err
+            detail += (" Could not confirm the file is owner-only (%s): keep it in a folder only you can read "
+                       "(on Linux or macOS, `chmod 600` it)." % err)
         return False, detail
     err = kf.delete()
     if err is None:

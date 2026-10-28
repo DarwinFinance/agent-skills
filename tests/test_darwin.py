@@ -1046,6 +1046,16 @@ class KeepFileReimport(Base):
         self.assertEqual(out["status"], "imported", out)
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
+    def test_a_kept_file_that_cannot_be_narrowed_says_so(self):
+        # Codex 1.4.1 r2 P2: on Windows the ACL is not checked, so the helper never implies the file is private.
+        path = self.keyfile()
+        self.use({self.GRANT_URL: [(200, {"grant": {"id": GRANT}})], self.HELLO_URL: [HELLO]})
+        with mock.patch.object(D.KeyFile, "restrict", return_value="permissions_not_checked_here"):
+            code, out = self.run_cli("import", path, "--keep-file")
+        self.assertEqual(out["status"], "imported", out)
+        self.assertIn("Could not confirm the file is owner-only (permissions_not_checked_here)", out["detail"])
+        self.assertIn("keep it in a folder only you can read", out["detail"])
+
     def test_memory_only_read_only_file_also_says_keep_it(self):
         D._BACKEND_FACTORIES = [MemoryOnlyStore]
         d = {"type": "darwin-agent-key", "version": 2, "realm": "darwin.finance", "credential": "owner_key",

@@ -13,5 +13,5 @@ Earlier versions are described in their pull requests and commit messages.
   (with `--realm beta` for a beta key).
 - `import --keep-file` on a memory-only store says to keep the file and import it again, instead of
   asking for it to be deleted; an import that deleted the file there says to use `--keep-file` next time.
-- A kept key file is made owner-only (`chmod 600`) after import; if that fails, the helper says so.
+- A kept key file is made owner-only (`chmod 600`) after import; where it cannot (or on Windows, where the ACL is not checked), the helper says to keep the file in a folder only the agent can read.
 - `import --help` explains `--keep-file`.
