@@ -13,7 +13,7 @@ license: MIT
 compatibility: Needs python3 (3.8+) and outbound HTTPS to darwin.finance. Without python3, follow https://darwin.finance/agents/setup.md instead.
 metadata:
   author: Darwin Finance
-  version: "1.4.1"
+  version: "1.4.2"
   homepage: https://darwin.finance/agents/setup
   repository: https://github.com/DarwinFinance/agent-skills
 ---
@@ -29,8 +29,8 @@ Darwin's market data. The canonical human guide is https://darwin.finance/agents
 ## Which way fits you
 
 - **In a chat app** (Claude.ai, ChatGPT, Claude Cowork) that can't keep a key: don't
-  pair. Tell your user to connect the chat app on Darwin's MCP page
-  (https://darwin.finance/mcp) and turn on trading for one of their agents when they
+  pair. Tell your user to connect the chat app with Connect an AI on Darwin
+  (https://darwin.finance/agents?create=1) and turn on trading for one of their agents when they
   approve it (with their passkey and 2FA). The app holds no key.
 - **Running code** (Claude Code, Codex, Cursor, Gemini CLI, Hermes, OpenClaw, a script
   or a server): pair with this skill, as below. If you can run commands, the Darwin CLI
@@ -60,8 +60,8 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
   as a downloaded key file (never pasted into the chat). For a session-only key file,
   do not run `darwin.py import` (it stores the key): have each command that calls
   Darwin read the file's `key` field and send it as the `Authorization` header on
-  stdin, never on a command line. Your user can also connect the chat app on Darwin's
-  MCP page (https://darwin.finance/mcp) and turn on trading for one of their agents when
+  stdin, never on a command line. Your user can also connect the chat app with Connect
+  an AI on Darwin (https://darwin.finance/agents?create=1) and turn on trading for one of their agents when
   they approve it; the app holds no key. (If your user said not to save the key,
   holding it for this session is what they asked for.)
 - **Your user asked for this.** Once you know you can keep the key, asking Darwin for
@@ -170,7 +170,7 @@ Below, `darwin.py` means that full command. Every command prints one line of JSO
    If `pair wait` returns `credential: "owner_key"`, your user gave you their own Darwin
    API key: it reads their whole account and trades only the Agentic Sub-Accounts they
    chose. It can't withdraw or move funds between their accounts. They revoke it on
-   Darwin's MCP page.
+   Darwin's Agents and API Keys tab (https://darwin.finance/agents?tab=agents).
 
 ## After pairing
 
@@ -221,8 +221,8 @@ If your user asks for a **read-only** connection ("connect Darwin read-only", "r
 
 then `darwin.py pair wait` as above. Darwin then offers your user only a read-only connection. If
 `pair start` returns `read_only_unsupported`, Darwin can't do read-only pairing here: tell your
-user, and suggest they create a **Read-Only API Key** on Darwin's Agents page and give it to you as a
-key file (**Download Key File for the Darwin Skill** in the window that shows the key;
+user, and suggest they create a **Read-Only API Key** with Connect an AI on Darwin
+(https://darwin.finance/agents?create=1) and give it to you as a key file (**Download Key File for the Darwin Skill** in the window that shows the key;
 then `darwin.py import`). Never retry without `--read-only`.
 
 A read-only key (`read_only: true`) reads Darwin's market data and your user's whole account
@@ -232,7 +232,8 @@ or pair an Agentic Sub-Account**: `darwin.py call` refuses any call that could, 
 the `welcome` verbatim (it is an account-level read-only welcome, with no agent and no address).
 Then use `darwin.py call GET …` and `darwin.py call POST /api/agent/v1/data/<tool> '<json>'` for reads.
 Without `--read-only`, your user may still choose read-only on Darwin; the helper handles that the
-same way. Your user revokes a read-only key on Darwin's Agents page.
+same way. Your user revokes a read-only key on Darwin's Agents and API Keys tab
+(https://darwin.finance/agents?tab=agents).
 
 ## Reconnect an existing agent
 
@@ -251,8 +252,8 @@ reconnected. If the helper returns `reconnect_unsupported`, use a key file inste
 ## Import a key file
 
 Your user can create a key on the agent's **Manage** tab, or by setting one up
-manually on Darwin, and press **Download key file**. For a **Read-Only API Key** (made on
-Darwin's Agents page), it is **Download Key File for the Darwin Skill**. Then:
+manually on Darwin, and press **Download key file**. For a **Read-Only API Key** (made with
+Connect an AI on Darwin), it is **Download Key File for the Darwin Skill**. Then:
 
     darwin.py import --keep-file <file>
 
@@ -290,7 +291,8 @@ every account call.
   again or ask your user for a new key file.
 - Several agents stored? Add `--agent-id <id>` (and `--realm beta` for beta) to `call`.
 - `darwin.py forget --agent-id <id>` deletes the local copy only. Tell your user to
-  revoke the key on the agent's **Manage** tab too.
+  revoke the key on the agent's **Manage** tab too (an owner or read-only key: on the
+  Agents and API Keys tab).
 - Beta testers add `--realm beta` to `pair start` / `pair reconnect`; beta keys only
   work on beta.darwin.finance.
 
